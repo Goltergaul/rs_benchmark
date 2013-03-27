@@ -14,4 +14,9 @@ Gem::Specification.new do |gem|
   gem.name          = "rs_benchmark"
   gem.require_paths = ["lib"]
   gem.version       = RsBenchmark::VERSION
+
+  gem.add_dependency 'rubyperf'
+  gem.add_dependency 'mongoid'
+
+  gem.add_development_dependency 'debugger'
 end
