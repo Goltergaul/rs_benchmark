@@ -13,6 +13,18 @@ module RsBenchmark
       index({"data.time" => 1}, {:background => true})
 
       attr_accessible :event, :data, :environment
+
+      def self.write_csv logs, filename
+        file_path =  "#{Rails.root}/log/workload/#{Rails.env}/#{filename}.csv"
+        FileUtils.mkdir_p File.dirname(file_path)
+        file_handler = File.open(file_path,"w")
+
+        logs.each do |log|
+          file_handler.write("time_unix;#{log.data["time"].to_i};#{log.data.to_a.join(";")}\n")
+        end
+
+        file_handler.close
+      end
     end
 
     def self.get_instance
