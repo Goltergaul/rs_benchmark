@@ -17,6 +17,7 @@ Gem::Specification.new do |gem|
 
   gem.add_dependency 'rubyperf'
   gem.add_dependency 'mongoid'
+  gem.add_dependency 'gsl'
 
   gem.add_development_dependency 'debugger'
 end
