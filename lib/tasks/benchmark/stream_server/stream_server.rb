@@ -7,14 +7,8 @@ require "mongoid"
 require "rs_benchmark/random_generator"
 require "active_record"
 
-# Mongoid.load! File.dirname(__FILE__) + "/../../../../config/mongoid.yml", :benchmark
-ActiveRecord::Base.establish_connection(
-  :adapter => "mysql2",
-  :database => "james_benchmark_server",
-  :user => "root",
-  :password => "0815",
-  :pool => 100
-)
+throw "Missing config/rs_benchmark.yml" unless RsBenchmark::Engine.benchmark_config
+ActiveRecord::Base.establish_connection(RsBenchmark::Engine.benchmark_config[:mysql])
 
 SCALE_FACTOR ||= 0.0001
 
@@ -52,6 +46,8 @@ module BenchmarkStreamServer
   end
 
   class StreamServer < Sinatra::Base
+    set :server, 'webrick'
+    set :bind, ENV["bind_address"]
     set :views, File.join(File.dirname(__FILE__), *%w[views])
     set :environment, :development
     use ActiveRecord::ConnectionAdapters::ConnectionManagement
