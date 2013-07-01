@@ -3,6 +3,35 @@ namespace :benchmark do
     begin
       $stdout.reopen("#{Rails.root}/log/stream_server.log", "w")
 
+      # check environment variables
+      # example: bind_address=192.168.178.22 ramp_up_step=20 ramp_up_delay=300 sserver_ip=188.194.91.101 scale=0.01 user_count=5 seed=123456
+      unless ENV["bind_address"]
+        $stderr.puts "You must set the environment variable 'bind_address' to the ip address of this machine"
+        next
+      end
+
+      unless ENV["sserver_ip"]
+        $stderr.puts "You must set the environment variable 'sserver_ip' to your internet ip adress. If you have a router, enable port forwarding to 'bind_address' on port 3333"
+        next
+      end
+
+      unless ENV["scale"]
+        $stderr.puts "You must set the environment variable 'scale'. A value of 1.0 is the normal scale, use a lower value to accelerate the task chains"
+        next
+      end
+
+      unless ENV["user_count"]
+        $stderr.puts "You must set the environment variable 'user_count' to desired number of active users to simulate"
+        next
+      end
+
+      if ENV["ramp_up_step"] && !ENV["ramp_up_delay"]
+        $stderr.puts "You have set the ramp_up_step environment variable. If you do that you must also specify 'ramp_up_delay' in seconds"
+        next
+      end
+
+      $stderr.puts "The monkeypatches have hardcoded the 'bind_address'. If you are using an other bind_address than 192.168.178.22, please verfiy it is hardcoded correctly."
+
       require "rs_benchmark/random_generator"
       require "rs_benchmark/response_time"
       require_relative "benchmark/stream_server/stream_server"
