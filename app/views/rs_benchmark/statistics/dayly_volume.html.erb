@@ -1,0 +1,15 @@
+<%= high_chart("chart_article_volume", @chart_article_volume) do |c| %>
+  <%= raw "options.plotOptions.pie.dataLabels.formatter = function() { return this.key + ' (' + Math.round(this.percentage*100)/100 + ' %)'; }"  %>
+<% end %>
+
+<%= high_chart("pipeline", @pipeline) %>
+<%= high_chart("pipeline_all", @pipeline_all) %>
+
+<%= high_chart("chart_reschedules", @chart_reschedules) %>
+
+<%= high_chart("chart_reschedules_vs_rank", @chart_reschedules_vs_rank) %>
+
+<%= #high_chart("user_stats_private_stream_counts", @user_stats_private_stream_counts)
+%>
+
+<%= high_chart("histogramm_feed_length_user_count", @histogramm_feed_length_user_count) %>

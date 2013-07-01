@@ -19,5 +19,12 @@ Gem::Specification.new do |gem|
   gem.add_dependency 'mongoid'
   gem.add_dependency 'gsl'
 
+  gem.add_dependency 'sinatra'
+  gem.add_dependency 'builder'
+  gem.add_dependency 'mongoid'
+  gem.add_dependency 'activerecord'
+  gem.add_dependency 'mysql2'
+  gem.add_dependency 'lazy_high_charts'
+
   gem.add_development_dependency 'debugger'
 end

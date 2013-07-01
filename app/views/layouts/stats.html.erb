@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>J#MES - reading like a sir</title>
+  <%= csrf_meta_tags %>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body class="<%= controller.controller_path.split("/").first %> <%= params[:action] %>">
+  <%= render "layouts/flash", {:flash => flash} %>
+
+    <%= yield %>
+
+  <%= javascript_include_tag "stats" %>
+</body>
+</html>

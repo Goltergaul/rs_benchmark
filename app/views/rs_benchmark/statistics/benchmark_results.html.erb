@@ -1,0 +1,21 @@
+<%= high_chart("chart_response_times", @chart_response_times) %>
+
+<table>
+  <tr>
+    <td>Data</td>
+    <td>Mean</td>
+    <td>Median</td>
+    <td>Sd</td>
+  </tr>
+  <% @chart_data.each do |key, data| %>
+    <tr>
+      <td><%= key %></td>
+      <td><%= data["mean"] %></td>
+      <td><%= data["median"] %></td>
+      <td><%= data["sd"] %></td>
+    </tr>
+  <% end %>
+</table>
+
+<%= high_chart("histogram_feed_first_arrival_times", @histogram_feed_first_arrival_times) %>
+<%= high_chart("histogram_feed_last_arrival_times", @histogram_feed_last_arrival_times) %>
