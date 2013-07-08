@@ -1,6 +1,72 @@
 namespace :benchmark do
+
+  task :generate_workload_file => :environment do
+    throw "You must specify environment variable 'dump_folder'" unless ENV["dump_folder"]
+
+    Rake::Task["benchmark:workload_generators:initialize_environment"].invoke
+    Rake::Task["benchmark:workload_generators:create_setup"].invoke
+
+    Entry.collection.drop
+
+    dump_name = "user_count_#{ENV["user_count"]}_seed_#{ENV["seed"]}"
+    puts "mongodump -d #{Entry.collection.database.name} -h #{Mongoid.default_session.cluster.seeds.first} -o #{ENV["dump_folder"]}/#{dump_name}"
+    puts `mongodump -d #{Entry.collection.database.name} -h #{Mongoid.default_session.cluster.seeds.first} -o #{ENV["dump_folder"]}/#{dump_name}`
+
+    # dump cache config
+    File.open("#{ENV["dump_folder"]}/#{dump_name}/cache_dump.yml", 'w') {|f| f.write(BenchmarkStreamServer::Cache.instance.export) }
+  end
+
   task :generate_workload => :environment do
     begin
+      Rake::Task["benchmark:workload_generators:initialize_environment"].invoke
+
+      puts "Starting stream simulation server..."
+      # start stream server in another thread
+      sinatra_thread = Thread.new do
+        BenchmarkStreamServer::StreamServer.run! :host => 'localhost', :port => 3333
+      end
+
+      # Clean up Solr
+      solr_config = YAML.load(File.open(File.join(Rails.root, "/config/solr.yml")))[ENV["RAILS_ENV"]]
+      Curl::Easy.http_post("http://#{solr_config["host"]}:#{solr_config["port"]}/solr/#{solr_config["core"]}/update?commit=true", {"delete" => { "query" => "*:*" }}.to_json) do |curl|
+        curl.headers["Content-type"] = "application/json"
+      end
+
+      if ENV["setup_from_folder"]
+        puts "Importing setup from #{ENV["setup_from_folder"]}/#{Entry.collection.database.name}/..."
+        puts `mongorestore -d #{Entry.collection.database.name} -h #{Mongoid.default_session.cluster.seeds.first} #{ENV["setup_from_folder"]}/#{Entry.collection.database.name}/`
+
+        puts "Importing Stream Server cache from file #{ENV["setup_from_folder"]}/cache_dump.yml"
+        BenchmarkStreamServer::Cache.instance.import "#{ENV["setup_from_folder"]}/cache_dump.yml"
+      else
+        Rake::Task["benchmark:workload_generators:create_setup"].invoke
+      end
+
+      # generate stream schedules
+      Rake::Task["benchmark:workload_generators:prepare_login_chains"].invoke
+
+      WorkloadInducer::Inducer.instance.induce!(sinatra_thread)
+      sinatra_thread.join
+    rescue Exception => e
+      puts e.message
+      puts e.backtrace
+    end
+  end
+
+  namespace :workload_generators do
+
+    task :create_setup do
+      fixtures_path = File.dirname(__FILE__)+"/../../testrun_fixtures/"
+      puts "Importing testrun fixtures using 'mongorestore -d #{Entry.collection.database.name} -h #{Mongoid.default_session.cluster.seeds.first} #{fixtures_path}'..."
+      puts `mongorestore -d #{Entry.collection.database.name} -h #{Mongoid.default_session.cluster.seeds.first} #{fixtures_path}`
+
+      # create streams
+      Rake::Task["benchmark:workload_generators:setup_streams"].invoke
+      # setup users
+      Rake::Task["benchmark:workload_generators:setup_users"].invoke
+    end
+
+    task :initialize_environment do
       $stdout.reopen("#{Rails.root}/log/stream_server.log", "w")
 
       # check environment variables
@@ -37,56 +103,31 @@ namespace :benchmark do
       require_relative "benchmark/stream_server/stream_server"
       require_relative "benchmark/monkey_patches"
 
+      Mongoid.configure do |config|
+        config.allow_dynamic_fields = true
+      end
+
       puts "Using random seed #{BenchmarkStreamServer::SEED} - set environment variable 'seed' to use a specific seed"
       @rand = GSL::Rng.alloc("gsl_rng_mt19937", BenchmarkStreamServer::SEED)
       @probabilities = YAML.load(File.open("#{Rails.root}/workload_specs/spec.yml")).with_indifferent_access
       @user_count = ENV["user_count"].to_i || 10
       @feed_count = (@probabilities["user_feed_ratio"].to_f*@user_count).to_i
 
-      puts "Starting stream simulation server..."
-      # start stream server in another thread
-      sinatra_thread = Thread.new do
-        BenchmarkStreamServer::StreamServer.run! :host => 'localhost', :port => 3333
-      end
-
-      # cleanup
-      puts "Cleaning up database..."
-      User.destroy_all
-      GlobalStream.destroy_all
-      Delayed::Job.delete_all
-      RsBenchmark::Logger::RsBenchmarkLogger.delete_all
-      RsBenchmark::ResponseTime::RsBenchmarkResponseTime.delete_all
-      Entry.delete_all
-      RankedEntry.delete_all
-      RedisStore.new.flushall
-
       SCALE_FACTOR = ENV["scale"].to_f || 1.0
       STREAM_SERVER = "http://192.168.178.22:3333"
       @stream_counter = 0
 
+      puts "Dropping Database..."
+      User.collection.database.drop
+      RedisStore.new.flushall
 
       # load monkey patches streams
       Rake::Task["benchmark:workload_generators:load_monkey_patches"].invoke
-      # create streams
-      Rake::Task["benchmark:workload_generators:setup_streams"].invoke
-      # setup users
-      Rake::Task["benchmark:workload_generators:setup_users"].invoke
-      # 2. generate stream schedules
-      Rake::Task["benchmark:workload_generators:prepare_login_chains"].invoke
-
-      WorkloadInducer::Inducer.instance.induce!(sinatra_thread)
-      sinatra_thread.join
-    rescue Exception => e
-      puts e.message
-      puts e.backtrace
     end
-  end
-
-  namespace :workload_generators do
 
     task :load_monkey_patches do
       puts "Applying monkey patches ... "
-      class User::Authentication
+      User::Authentication.class_eval do
         # do not schedule stream after adding it
         def schedule_stream
         end
@@ -117,9 +158,6 @@ namespace :benchmark do
       puts "Creating #{@user_count} users..."
 
       @uuid = 0
-      global_stream_generator = RsBenchmark::UrnRandomGenerator.new(@probabilities[:user][:global_streams_count], BenchmarkStreamServer::SEED)
-      private_stream_generator = RsBenchmark::UrnRandomGenerator.new(@probabilities[:user][:private_streams_count], BenchmarkStreamServer::SEED)
-
       # choose random private stream and make sure not to choose two times the same for the same user
       def create_private_stream user
         type = ""
@@ -157,7 +195,8 @@ namespace :benchmark do
             "access_token" => access_token,
             "fetch" => true,
             "expires_at" => Time.now+ 4.weeks,
-            "last_fetched_at" => 4.weeks.ago
+            "last_fetched_at" => 4.weeks.ago,
+            "access_secret" => "abcedefewfwe"
           })
 
           BenchmarkStreamServer::Cache.instance.add_stream :url => "#{STREAM_SERVER}/twitter/#{access_token}", :length => 100, :id => access_token, :type => :twitter
@@ -175,22 +214,18 @@ namespace :benchmark do
           :confirmed_at => Time.now,
           :current_sign_in_at => Time.now,
         )
-
-        # we do not want to create users that have no stream at all
-        global_count = private_count = 0
-        while global_count == 0 && private_count == 0 do
-          global_count = global_stream_generator.pick.to_i
-          private_count = private_stream_generator.pick.to_i
-        end
+        user_profile_id = @probabilities[:user_profile].keys[@rand.uniform_int(@probabilities[:user_profile].keys.count)]
+        user_profile = @probabilities[:user_profile][user_profile_id]
+        user.write_attribute(:user_profile_id, user_profile_id)
 
         # generate private streams for user
-        private_count.times do
+        user_profile[:private_streams_count].times do
           create_private_stream user
         end
 
         # assign public streams to user
         gs_ids = []
-        global_count.times do |gs_count|
+        user_profile[:global_stream_count].times do |gs_count|
           stream_config = {}
           while stream_config[:type] != :rss do
             stream_config = BenchmarkStreamServer::Cache.instance.pick_stream
@@ -198,9 +233,18 @@ namespace :benchmark do
           gs_ids << GlobalStream::Rss.where(:url => stream_config[:url]).first.id
         end
         user.global_stream_ids = gs_ids
-        user.save(:validate => false)
+        user.save!
 
-        # puts "created user #{user.id} with #{global_count} global streams and #{private_count} private streams"
+        # create ratings for taht profile
+        entry_count = Entry.count
+        user_profile[:rated_entries].times do
+          begin
+            user.vote @rand.uniform_int(5)+1, Entry.offset(@rand.uniform_int(entry_count)).first
+          rescue
+            puts "Warning: Vote failed due to implementation error"
+          end
+        end
+        puts "created user #{user.id} with #{user_profile[:global_stream_count]} global streams and #{user_profile[:private_streams_count]} private streams and #{user_profile[:rated_entries]} ratings"
       end
     end
 
@@ -209,19 +253,12 @@ namespace :benchmark do
       puts "Generating login chains... (Time values will be scaled by #{SCALE_FACTOR})"
 
       # create generator to pick a user group (first version picks only an user, there are no groups)
-      user_groups = @probabilities[:user_reschedule_intervals].keys
-      user_group_probabilities = {}
-      user_groups.each do |user_id|
-        user_group_probabilities[user_id] = 1.0/user_groups.length
-      end
-      group_name_generator = RsBenchmark::UrnRandomGenerator.new(user_group_probabilities, BenchmarkStreamServer::SEED)
 
       User.all.each do |user|
-        interval_generator = RsBenchmark::UrnRandomGenerator.new(@probabilities[:user_reschedule_intervals][group_name_generator.pick], BenchmarkStreamServer::SEED)
-
-        # def create_task(task_count, max_task_count)
-        #   WorkloadInducer::UserScheduleTask.new({:wait_time => interval_generator.pick.seconds * scale_factor}, create_task(task_count+1, max_task_count))
-        # end
+        user_profile_id = user.read_attribute(:user_profile_id)
+        user_profile = @probabilities[:user_profile][user_profile_id]
+        throw "User profile with id #{user_profile_id} not found. Maybe the setup is using an old dump?" unless user_profile
+        interval_generator = RsBenchmark::PseudoRandomGenerator.new(user_profile[:reschedule_intervals], BenchmarkStreamServer::SEED)
 
         task_count = 0
         max_task_count = 20

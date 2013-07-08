@@ -88,7 +88,7 @@ module Statistics
       finalize  = %Q{
         function(key, value) {
           if(value.frequency === 0) {
-            value.avg = 0;
+            value.avg = 0.0;
           } else {
             value.avg = value.sum / value.frequency;
           }
@@ -108,7 +108,7 @@ module Statistics
               "value" => {
                 "frequency" => 0,
                 "bin_start" => bin_start,
-                "avg" => 0
+                "avg" => bin_start.to_f
               }
             }
           end
@@ -151,7 +151,7 @@ module Statistics
         bin = 0
         label = 0
         if logaritmic
-          bin = (Math.log10(value*a)*6).ceil
+          bin = (value == 0.0) ? 0 : (Math.log10(value*a)*6).ceil
         else
           bin = (value/step_size).ceil
         end
@@ -191,7 +191,7 @@ module Statistics
       result_hash
     end
 
-    def self.extract_workload_spec data, name, property, bin_count=20, hash_name="value", logaritmic = false
+    def self.extract_workload_spec data, name, property, bin_count=20, hash_name="value", logaritmic = false, relative_frequencies=true
       yaml_hash = {
         name => {
           property => {}
@@ -207,9 +207,14 @@ module Statistics
 
       total_frequency_count = histogramm[:data].sum
       histogramm[:data].each_with_index do |frequency, i|
+        next if frequency == 0.0
         value = histogramm[:avg_labels][i] # use average of bin values as value instead of upper bin size limit
-        probabillity = frequency/total_frequency_count.to_f
-        result_hash[value] = probabillity
+        if relative_frequencies
+          probabillity = frequency/total_frequency_count.to_f
+          result_hash[value] = probabillity
+        else
+          result_hash[value] = frequency.to_i
+        end
       end
 
       yaml_hash

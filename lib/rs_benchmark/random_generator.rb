@@ -29,26 +29,27 @@ module RsBenchmark
 
   class UrnRandomGenerator
 
-    def initialize distribution, seed=rand
-      @distribution = distribution
+    # needs absolute frequencies, not relative ones
+    def initialize abs_distribution, seed=rand
+      @distribution = abs_distribution
+
+      # check distribution
+      @distribution.values.each do |value|
+        throw "First param passed to UrnRandomGenerator must be absolute frequencies (the value of each pair must be an integer!) Value was #{value}" unless value.is_a? Integer
+      end
+
+      @gcd = @distribution.values.first
+      @distribution.values.each do |val|
+        @gcd = @gcd.gcd(val)
+      end
+
       @rnd = GSL::Rng.alloc("gsl_rng_mt19937", seed)
       @urn_content = []
     end
 
-    def cycle_size
-      minimal_probabillity = 1.0
-      @distribution.each do |value, probabillity|
-        minimal_probabillity = probabillity if probabillity < minimal_probabillity
-      end
-
-      100/minimal_probabillity
-    end
-
     def fill_urn
-      urn_size = cycle_size
-
-      @distribution.each do |value, probabillity|
-        (urn_size*probabillity).to_i.times do
+      @distribution.each do |value, count|
+        (count/@gcd).to_i.times do
           @urn_content << value
         end
       end

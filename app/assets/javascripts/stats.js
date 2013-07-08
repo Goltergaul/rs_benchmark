@@ -1,2 +1,2 @@
 //= require jquery
-//= require_tree ./rs_benchmark
+//= require ./rs_benchmark/application.js

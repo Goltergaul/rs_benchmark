@@ -16,12 +16,15 @@ module RsBenchmark
       map = %Q{
         function() {
           if(this.tag.match(/^response_time/)) {
-            emit(this.tag+this.data.time.getUTCDate()+this.data.time.getUTCHours()+Math.floor(this.data.time.getUTCMinutes()/6), {
+            var minute = (Math.ceil(this.data.time.getUTCMinutes()/5)*5); // build mean over every 5 minutes
+            var time = new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), minute);
+            time = time.setMinutes(time.getMinutes() - 5);
+            emit(this.tag+time, {
               real_sum: this.data.real,
               real_count: 1,
               utime_sum: this.data.utime,
               utime_count: 1,
-              time: this.data.time,
+              time: time,
               tag: this.tag
             });
           } else {
@@ -30,7 +33,7 @@ module RsBenchmark
               real_count: 1,
               utime_sum: this.data.utime,
               utime_count: 1,
-              time: this.data.time,
+              time: +new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), this.data.time.getMinutes()),
               tag: this.tag
             });
           }
@@ -60,23 +63,15 @@ module RsBenchmark
         }
       }
 
+      # response times
       results = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.between("data.time" => from_time..to_time)
         .where(:tag.in => [/^consume_/, "response_time_stream_first", "response_time_stream_all"])
         .where(:"data.real".lt => 1000).map_reduce(map, reduce).out(:inline => 1).finalize(finalize)
 
-      ramp_up_steps = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag => "ramp_up_step").between("data.time" => from_time..to_time).asc("data.time")
-      user_counts = []
-      last_step_count = 0
-      ramp_up_steps.each do |bm|
-        user_counts << [bm.data["time"].utc.to_i*1000, last_step_count]
-        user_counts << [bm.data["time"].utc.to_i*1000, bm.data["new_step_count"]]
-        last_step_count = bm.data["new_step_count"]
-      end
-
       @chart_data = {}
       results.each do |bm|
         @chart_data[bm["value"]["tag"]] = { "values" => []} unless @chart_data[bm["value"]["tag"]]
-        @chart_data[bm["value"]["tag"]]["values"] << [bm["value"]["time"].utc.to_i * 1000, bm["value"]["real_mean"]]
+        @chart_data[bm["value"]["tag"]]["values"] << [bm["value"]["time"].to_i, bm["value"]["real_mean"]]
       end
       @chart_data.each do |key, data|
         data["values"] = data["values"].sort_by { |k| k[0] } # sort by time
@@ -86,6 +81,120 @@ module RsBenchmark
         data["median"] = vector.sort.median_from_sorted_data
       end
 
+      # user numbers
+      ramp_up_steps = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag => "ramp_up_step").between("data.time" => from_time..to_time).asc("data.time")
+      user_counts = []
+      last_step_count = 0
+      ramp_up_steps.each do |bm|
+        user_counts << [bm.data["time"].utc.to_i*1000, last_step_count]
+        user_counts << [bm.data["time"].utc.to_i*1000, bm.data["new_step_count"]]
+        last_step_count = bm.data["new_step_count"]
+      end
+
+      # failure/success rate
+      map = %Q{
+        function() {
+          if(this.tag == "failure") {
+            emit(this.data.time.getUTCDate()+this.data.time.getUTCHours()+Math.floor(this.data.time.getUTCMinutes()), {
+              failure_count: 1,
+              success_count: 0,
+              type: this.tag,
+              time: new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), this.data.time.getMinutes())
+            });
+          } else {
+            emit(this.data.time.getUTCDate()+this.data.time.getUTCHours()+Math.floor(this.data.time.getUTCMinutes()), {
+              failure_count: 0,
+              success_count: 1,
+              type: this.tag,
+              time: new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), this.data.time.getMinutes())
+            });
+          }
+        }
+      }
+
+      reduce = %Q{
+        function(key, values) {
+          var result = { time: null, type: null, failure_count: 0, success_count: 0 };
+          values.forEach(function(value) {
+              result.failure_count += value.failure_count;
+              result.success_count += value.success_count;
+              result.type = value.type;
+              result.time = value.time;
+          });
+          return result;
+        }
+      }
+
+      finalize  = %Q{
+        function(key, value) {
+          value.failure_ratio = value.failure_count/value.success_count;
+          return value;
+        }
+      }
+
+      failures_successes = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag.in => ["failure","success"]).between("data.time" => from_time..to_time)
+        .map_reduce(map, reduce).out(:inline => 1).finalize(finalize)
+      failure_ratio = []
+      failures_successes.each do |bm|
+        failure_ratio << [bm["value"]["time"].utc.to_i * 1000, bm["value"]["failure_ratio"]]
+      end
+      failure_ratio = failure_ratio.sort_by { |k| k[0] } # sort by time
+
+      # io rate
+
+      map = %Q{
+        function() {
+          var time = new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), this.data.time.getMinutes());
+          if(this.data.worker == "Workers::Rank") {
+            emit(this.data.time.getUTCDate()+this.data.time.getUTCHours()+this.data.time.getUTCMinutes(), {
+              count_in: 0,
+              count_out: 1,
+              type: this.tag,
+              time: time
+            });
+          } else {
+            emit(this.data.time.getUTCDate()+this.data.time.getUTCHours()+this.data.time.getUTCMinutes(), {
+              count_in: 1,
+              count_out: 0,
+              type: this.tag,
+              time: time
+            });
+          }
+        }
+      }
+
+      reduce = %Q{
+        function(key, values) {
+          var result = { time: null, count_in: 0, count_out: 0 };
+          values.forEach(function(value) {
+            result.count_in += value.count_in;
+            result.count_out += value.count_out;
+            result.time = value.time;
+          });
+          return result;
+        }
+      }
+
+      accumulated_count_in = 0
+      accumulated_count_out = 0
+      input_rate = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag => "success").where(:"data.worker".in => ["Workers::ExistenceChecker", "Workers::Rank"])
+        .between("data.time" => from_time..to_time).map_reduce(map, reduce).out(:inline => 1).map do |bm|
+          [bm["value"]["time"].utc.to_i * 1000, bm["value"]["count_in"], bm["value"]["count_out"]]
+      end
+      input_rate = input_rate.sort_by { |k| k[0] } # sort by time
+      input_rate.each do |value|
+        accumulated_count_out += value[2]
+        value[2] = accumulated_count_out
+
+        accumulated_count_in += value[1]
+        value[1] = accumulated_count_in
+      end
+
+      # output_rate = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag => "success", :"data.type" => "Workers::Rank")
+      #   .between("data.time" => from_time..to_time).map_reduce(map, reduce).out(:inline => 1).map do |bm|
+      #     [bm["value"]["time"].utc.to_i * 1000, bm["value"]["success_count"]]
+      # end
+
       @chart_response_times = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Antwortzeiten"})
         f.options[:chart][:zoomType] = "x"
@@ -93,7 +202,7 @@ module RsBenchmark
         f.options[:plotOptions] = {
           :series => {
             :marker => {
-              radius: 1
+              radius: 0
             }
           }
         }
@@ -102,7 +211,7 @@ module RsBenchmark
             text: 'Dauer [s]'
           },
           min: 0,
-          max: 10
+          # max: 10
         },
         {
           title: {
@@ -115,17 +224,40 @@ module RsBenchmark
             text: 'Feedverarbeitungsdauer [s]'
           },
           min: 0,
-          max: 400
+          # max: 400
+        },
+        {
+          title: {
+            text: 'Fehlerrate'
+          },
+          min: 0,
+          # max: 400
+        },
+        {
+          title: {
+            text: 'Anzahl an Artikeln'
+          },
+          min: 0,
+          # max: 400
         }]
+
+        f.series(:type=> 'arearange',:name=> "Anzahl an Artikeln in Verarbeitung (Fläche) Oberkante = Anzahl zu verarbeitender Artikel, Unterkante = Verarbeitete Artikel",
+            :data => input_rate, :yAxis => 4, :fillOpacity => 0.2,
+            :lineWidth => 1, :color => "rgba(0,0,255,0.5)")
 
         f.series(:type=> 'line',:name=> "Useranzahl",
             :data => user_counts, :yAxis => 1,
-            :lineWidth => 2, :color => "#ff0000")
+            :lineWidth => 1, :color => "#0000ff")
 
+        f.series(:type=> 'line',:name=> "Fehlerrate",
+            :data => failure_ratio, :yAxis => 3,
+            :lineWidth => 1, :color => "#ff0000")
+
+        colors = ["#ffca00", "#47ff00", "#00ffff", "#00a5ff", "#c300ff", "#ff00e1"]
         @chart_data.each do |key, data|
-          f.series(:type=> 'line',:name=> key,
+          f.series(:type=> 'spline',:name=> key,
             :data => data["values"], :yAxis => key.match(/response/)? 2 : 0,
-            :lineWidth => 2, :color => key.match(/response/)? "rgba(#{rand(255)}, #{rand(255)}, #{rand(255)}, 1.0)" : "rgba(#{rand(255)}, #{rand(255)}, #{rand(255)}, .5)")
+            :lineWidth => key.match(/response/)? 2 : 1, :color => colors.pop)
         end
       end
 
@@ -186,8 +318,8 @@ module RsBenchmark
       # return
 
       user_id = grouped_by_user.keys.first
-      @histogramm_probabillities = Statistics::Dayly.extract_workload_spec grouped_by_user[user_id][:intervals], "login_intervals", user_id, 50
-      histogramm_data = Statistics::Dayly.histogramm_from_array(grouped_by_user[user_id][:intervals], 50, false)
+      histogramm_data = Statistics::Dayly.histogramm_from_array(grouped_by_user[user_id][:intervals], 50, true)
+
       @histogramm_user_reschedule_interval_one_user = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Histogramm Zeitraum zwischen Reschedules der NutzerIn #{user_id}"})
         f.options[:xAxis][:type] = "linear"
@@ -238,8 +370,9 @@ module RsBenchmark
         grouped_by_user.each_with_index do |hash, index|
           data = hash.last
           data_scatter = []
+          next if hash.first == "51b059e319f1d790f5000047"
           data[:intervals].each_with_index do |x, i|
-            data_scatter << [x, rand(100)]
+            data_scatter << [x, rand(10000)/100.0]
           end
 
           f.series(:name=> hash.first,
@@ -247,8 +380,17 @@ module RsBenchmark
         end
       end
 
+      puts "logininterval fertig"
+
       # ####### histogramm user anzahl an global streams
       result = Statistics::Dayly.histogramm(Statistics::Dayly.where("value.type" => "user_stats"), "global_streams_count", 20)
+      sum = 0
+      result[:data].each_with_index do |data, i|
+        puts "#{data}*#{result[:labels][i]}"
+        sum += data*result[:labels][i]
+      end
+      puts sum
+      puts User.count
 
       @user_stats_global_stream_counts = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Histogramm über die Anzahl an globalen Streams pro User"})
@@ -260,7 +402,14 @@ module RsBenchmark
             title: {
               text: 'Häufigkeit'
             },
-            min: 0
+            min: 0,
+            plotLines:[{
+              value: sum/User.count,
+              color: '#ff0000',
+              width:2,
+              zIndex:4,
+              label:{text:"Durchschnitt #{(sum/User.count).round(2)}"}
+            }]
           }]
 
         f.series(:type=> 'column',:name=> 'Häufigkeiten globaler Streams',
@@ -268,6 +417,8 @@ module RsBenchmark
             enabled: true
           })
       end
+
+      puts "user glob stream fertig"
 
       # ####### histogramm user anzahl an privaten streams
       result = Statistics::Dayly.histogramm(Statistics::Dayly.where("value.type" => "user_stats"), "private_streams_count", 20)
@@ -289,7 +440,34 @@ module RsBenchmark
           :data => result[:data], :color => "#005fad", dataLabels: {
             enabled: true
           })
+
+        f.series(:type=> 'pie',:name=> 'Verteilung Twitter/Facebook',
+          :data=> [
+            {:name=> 'Facebook', :y=> User.elem_match(:authentications => {:_type => "User::Authentication::Facebook"}).count, :color=> '#3b5998'},
+            {:name=> 'Twitter', :y=> User.elem_match(:authentications => {:_type => "User::Authentication::Twitter"}).count, :color=> '#27cbfe'}
+          ],
+          :center=> [100, 80], :size=> 150, :showInLegend=> false, dataLabels: {
+            enabled: true,
+            formatter: "function() {
+                return Math.round(this.percentage*100)/100 + '% <br>'+this.point.name;
+            }".js_code,
+            distance: -40,
+            color:'white'
+          })
+
+        f.options[:labels] = {
+          items: [{
+            html: 'Typenverteilung',
+            style: {
+              left: '75px',
+              top: '10px',
+              color: 'black'
+            }
+          }]
+        }
       end
+
+      puts "user private stream fertig"
 
       ####### histogramm artikellängen rss
       result = Statistics::Dayly.histogramm(RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank", "data.service" => "rss"), "body_length", 150, "data", false)
@@ -326,6 +504,8 @@ module RsBenchmark
           })
       end
 
+      puts "rss längen fertig"
+
       ####### histogramm artikellängen facebook
       result = Statistics::Dayly.histogramm(RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank", "data.service" => "facebook"), "body_length", 150, "data", false)
 
@@ -360,6 +540,8 @@ module RsBenchmark
             enabled: true
           })
       end
+
+      puts "facebook längen fertig"
 
       ####### histogramm artikellängen twitter
       result = Statistics::Dayly.histogramm(RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank", "data.service" => "twitter"), "body_length", 150, "data", false)
@@ -396,6 +578,8 @@ module RsBenchmark
           })
       end
 
+      puts "twitter längen fertig"
+
       ####### histogramm feedlängen
 
       result = Statistics::Dayly.histogramm(RsBenchmark::Logger::RsBenchmarkLogger.where("event" => "worker_stream_fetcher"), "stream_entries_count", 20, "data")
@@ -419,6 +603,8 @@ module RsBenchmark
             enabled: true
           })
       end
+
+      puts "feed längen fertig"
 
       ####### pie chart facebook post types
 
@@ -940,6 +1126,44 @@ module RsBenchmark
 
         f.series(:name=> 'foo',
           :data => data, :color => "rgba(223, 83, 83, .5)")
+      end
+
+      # histogramm abonnentenanzahl
+
+      gs_stats = {}
+      sum = 0
+      GlobalStream::Rss.all.each do |s|
+        gs_stats[s.user_ids.count] = 0 unless gs_stats[s.user_ids.count]
+        gs_stats[s.user_ids.count] += 1
+        sum += s.user_ids.count
+      end
+
+      gs_stats = gs_stats.sort_by { |key,value| -value }
+
+      @histogramm_abo_count = LazyHighCharts::HighChart.new('graph') do |f|
+        f.title({ :text=>"AbonnentInnen Anzahlen pro Stream"})
+        f.options[:chart][:zoomType] = "x"
+        f.options[:xAxis][:categories] = gs_stats.map do |array| array[0] end
+        f.options[:xAxis][:type] = "linear"
+        f.options[:xAxis][:title] = { text: "AbonnentInnen Anzahl" }
+        f.options[:yAxis] = [{
+            title: {
+              text: 'Häufigkeit'
+            },
+            min: 0,
+            plotLines:[{
+              value: sum/GlobalStream::Rss.count.to_f,
+              color: '#ff0000',
+              width:2,
+              zIndex:4,
+              label:{text:"Durchschnitt #{(sum/GlobalStream::Rss.count.to_f).round(2)}"}
+            }]
+          }]
+
+        f.series(:type=> 'column',:name=> 'Häufigkeit',
+          :data => gs_stats.map do |array| array[1] end, :color => "#005fad", dataLabels: {
+            enabled: true
+          })
       end
     end
   end

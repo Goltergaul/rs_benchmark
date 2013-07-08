@@ -36,8 +36,8 @@ module WorkloadInducer
     end
 
     def perform chain_finished_callback
-      # puts "performing reschedule on user #{@user_id}"
-      User.find(@user_id).reschedule_stream_updates
+      user = User.find(@user_id)
+      user.current_sign_in_at = Time.now
       @run = true
 
       if @next_task

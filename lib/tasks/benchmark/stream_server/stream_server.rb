@@ -41,7 +41,23 @@ module BenchmarkStreamServer
 
     # return a random stream
     def pick_stream
-      @streams[@streams.keys[rand(@streams.keys.length-1)]]
+      unless @urn
+        probabilities = {}
+        @stream.each do |id, stream|
+          probabilities[stream] = 1/@stream.count.to_f
+        end
+        @urn = RsBenchmark::UrnRandomGenerator.new(probabilities, BenchmarkStreamServer::SEED)
+      end
+      @urn.pick
+    end
+
+    def export
+      @streams.to_yaml
+    end
+
+    def import file_path
+      @streams = YAML.load(File.read(file_path)).with_indifferent_access
+      puts "Loaded #{@streams.keys.count} stream configurations!"
     end
   end
 

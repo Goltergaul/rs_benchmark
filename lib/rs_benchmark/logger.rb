@@ -11,6 +11,7 @@ module RsBenchmark
       index({:event => 1}, {:background => true})
       index({:environment => 1}, {:background => true})
       index({"data.time" => 1}, {:background => true})
+      index "data.service" => 1
 
       attr_accessible :event, :data, :environment
 
