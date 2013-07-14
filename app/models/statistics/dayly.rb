@@ -4,7 +4,8 @@ module Statistics
 
     field :value, :type => Hash
 
-    index({"value.type" => 1}, {:background => true})
+    index({"value.type" => 1})
+    index({"value.service" => 1})
 
     def self.group_by_minute_and_hour prefix, query
       query = query.to_a
@@ -142,7 +143,7 @@ module Statistics
       array.sort!
       maximum = array.max
       minimum = array.min
-      step_size = ((maximum - minimum) / bin_count).ceil
+      step_size = ((maximum - minimum) / bin_count.to_f).ceil
       a = 10**bin_count / maximum
 
       result = {}
@@ -153,7 +154,7 @@ module Statistics
         if logaritmic
           bin = (value == 0.0) ? 0 : (Math.log10(value*a)*6).ceil
         else
-          bin = (value/step_size).ceil
+          bin = (value/step_size.to_f).ceil
         end
         result[bin] ||= 0
         result[bin] += 1

@@ -10,7 +10,7 @@ require "active_record"
 throw "Missing config/rs_benchmark.yml" unless RsBenchmark::Engine.benchmark_config
 ActiveRecord::Base.establish_connection(RsBenchmark::Engine.benchmark_config[:mysql])
 
-SCALE_FACTOR ||= 0.0001
+SCALE_FACTOR ||= 0.1
 
 module BenchmarkStreamServer
 
@@ -43,8 +43,8 @@ module BenchmarkStreamServer
     def pick_stream
       unless @urn
         probabilities = {}
-        @stream.each do |id, stream|
-          probabilities[stream] = 1/@stream.count.to_f
+        @streams.each do |id, stream|
+          probabilities[stream] = 1
         end
         @urn = RsBenchmark::UrnRandomGenerator.new(probabilities, BenchmarkStreamServer::SEED)
       end

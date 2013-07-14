@@ -3,7 +3,7 @@ require "lazy_high_charts"
 require "gsl"
 
 module RsBenchmark
-  class StatisticsController < ActionController::Base
+  class StatisticsController < RsBenchmark::ApplicationController
     layout "stats"
     http_basic_authenticate_with :name => Engine.benchmark_config[:access_control][:user], :password => Engine.benchmark_config[:access_control][:password]
 
@@ -18,13 +18,13 @@ module RsBenchmark
           if(this.tag.match(/^response_time/)) {
             var minute = (Math.ceil(this.data.time.getUTCMinutes()/5)*5); // build mean over every 5 minutes
             var time = new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), minute);
-            time = time.setMinutes(time.getMinutes() - 5);
+            time = new Date(time - 2.5 * 1000 * 60);
             emit(this.tag+time, {
               real_sum: this.data.real,
               real_count: 1,
               utime_sum: this.data.utime,
               utime_count: 1,
-              time: time,
+              time: +time,
               tag: this.tag
             });
           } else {
@@ -75,10 +75,11 @@ module RsBenchmark
       end
       @chart_data.each do |key, data|
         data["values"] = data["values"].sort_by { |k| k[0] } # sort by time
-        vector = GSL::Vector.alloc(data["values"].map do |a| a[1] end)
+        vector = GSL::Vector.alloc(data["values"].map do |a| a[1] end).sort
         data["mean"] = vector.mean
         data["sd"] = vector.sd
-        data["median"] = vector.sort.median_from_sorted_data
+        data["median"] = vector.median_from_sorted_data
+        data["quantil_90"] = calculate_percentile(data["values"].map do |a| a[1] end, 0.9)
       end
 
       # user numbers
@@ -199,6 +200,7 @@ module RsBenchmark
         f.title({ :text=>"Antwortzeiten"})
         f.options[:chart][:zoomType] = "x"
         f.options[:xAxis][:type] = "datetime"
+        f.options[:chart][:height] = "500"
         f.options[:plotOptions] = {
           :series => {
             :marker => {
@@ -206,11 +208,13 @@ module RsBenchmark
             }
           }
         }
+
         f.options[:yAxis] = [{
           title: {
             text: 'Dauer [s]'
           },
           min: 0,
+          plotLines: []
           # max: 10
         },
         {
@@ -254,10 +258,29 @@ module RsBenchmark
             :lineWidth => 1, :color => "#ff0000")
 
         colors = ["#ffca00", "#47ff00", "#00ffff", "#00a5ff", "#c300ff", "#ff00e1"]
+
         @chart_data.each do |key, data|
           f.series(:type=> 'spline',:name=> key,
             :data => data["values"], :yAxis => key.match(/response/)? 2 : 0,
             :lineWidth => key.match(/response/)? 2 : 1, :color => colors.pop)
+
+          # if key == "consume_Workers::Rank"
+          #  f.options[:yAxis][0][:plotLines] << {
+          #     value: data["quantil_90"],
+          #     color: '#ff0000',
+          #     width:2,
+          #     zIndex:4,
+          #     label:{text:"90%-Quantil #{data["quantil_90"].round(2)}"}
+          #   }
+
+          #   f.options[:yAxis][0][:plotLines] << {
+          #     value: data["mean"],
+          #     color: '#ff0000',
+          #     width:2,
+          #     zIndex:4,
+          #     label:{text:"Durchschnitt #{data["mean"].round(2)}"}
+          #   }
+          # end
         end
       end
 
@@ -335,49 +358,24 @@ module RsBenchmark
           })
       end
 
+      intervals = grouped_by_user.sum do |user_id, data|
+        data[:intervals]
+      end
+      histogramm_data = Statistics::Dayly.histogramm_from_array(intervals, 50, true)
+
       @histogramm_user_reschedule_interval = LazyHighCharts::HighChart.new('graph') do |f|
-        f.title({ :text=>"Histogramm Zeitraum zwischen Reschedules"})
-        f.options[:chart] = {
-          type: 'scatter',
-          zoomType: 'xy',
-          height: 2200
-        }
-        f.options[:xAxis] = [{
-            title: {
-              text: 'Intervalgröße in Minuten'
-            },
-            type: "logarithmic",
-            startOnTick: true,
-            endOnTick: true,
-            showLastLabel: true
-          }]
-        f.options[:yAxis] = [{
-            title: {
-              text: 'Zufallszahlen'
-            },
-            #type: "logarithmic"
-          }]
-        f.options[:plotOptions] = {
-          scatter: {
-            tooltip: {
-              headerFormat: '<b>Daten:</b><br>',
-              pointFormat: 'Intervalgröße: {point.x}, Häufigkeit: {point.y}'
-            }
-          }
-        }
+        f.title({ :text=>"Histogramm Zeitraum zwischen Reschedules aller NutzerInnen"})
+        f.options[:xAxis][:type] = "linear"
+        f.options[:yAxis][:type] = "logarithmic"
+        f.options[:xAxis][:tile] = "Intervale in Minuten"
+        f.options[:xAxis][:categories] = histogramm_data[:labels]
+        f.options[:chart][:zoomType] = "x"
+        f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right' }
 
-        srand 234353564
-        grouped_by_user.each_with_index do |hash, index|
-          data = hash.last
-          data_scatter = []
-          next if hash.first == "51b059e319f1d790f5000047"
-          data[:intervals].each_with_index do |x, i|
-            data_scatter << [x, rand(10000)/100.0]
-          end
-
-          f.series(:name=> hash.first,
-            :data => data_scatter, :color => "rgba(#{rand(255)}, #{rand(255)}, #{rand(255)}, .5)")
-        end
+        f.series(:type=> 'column',:name=> "Häufigkeit",
+          :data => histogramm_data[:data], :color => "#005fad", dataLabels: {
+            enabled: true
+          })
       end
 
       puts "logininterval fertig"
@@ -386,30 +384,27 @@ module RsBenchmark
       result = Statistics::Dayly.histogramm(Statistics::Dayly.where("value.type" => "user_stats"), "global_streams_count", 20)
       sum = 0
       result[:data].each_with_index do |data, i|
-        puts "#{data}*#{result[:labels][i]}"
         sum += data*result[:labels][i]
       end
-      puts sum
-      puts User.count
 
       @user_stats_global_stream_counts = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Histogramm über die Anzahl an globalen Streams pro User"})
         f.options[:xAxis][:type] = "linear"
         f.options[:chart][:zoomType] = "x"
+        f.options[:xAxis][:plotLines] = [{
+          value: sum/User.count,
+          color: '#ff0000',
+          width:2,
+          zIndex:4,
+          label:{text:"Durchschnitt #{(sum/User.count).round(2)}"}
+        }]
         f.options[:xAxis][:categories] = result[:labels]
         f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right' }
         f.options[:yAxis] = [{
             title: {
               text: 'Häufigkeit'
             },
-            min: 0,
-            plotLines:[{
-              value: sum/User.count,
-              color: '#ff0000',
-              width:2,
-              zIndex:4,
-              label:{text:"Durchschnitt #{(sum/User.count).round(2)}"}
-            }]
+            min: 0
           }]
 
         f.series(:type=> 'column',:name=> 'Häufigkeiten globaler Streams',
@@ -422,10 +417,21 @@ module RsBenchmark
 
       # ####### histogramm user anzahl an privaten streams
       result = Statistics::Dayly.histogramm(Statistics::Dayly.where("value.type" => "user_stats"), "private_streams_count", 20)
+      sum = 0
+      result[:data].each_with_index do |data, i|
+        sum += data*result[:labels][i]
+      end
 
       @user_stats_private_stream_counts = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Histogramm über die Anzahl an privater Streams pro User"})
         f.options[:xAxis][:type] = "linear"
+        f.options[:xAxis][:plotLines] = [{
+          value: sum/User.count,
+          color: '#ff0000',
+          width:2,
+          zIndex:4,
+          label:{text:"Durchschnitt #{(sum/User.count).round(2)}"}
+        }]
         f.options[:chart][:zoomType] = "x"
         f.options[:xAxis][:categories] = result[:labels]
         f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right' }
@@ -645,14 +651,15 @@ module RsBenchmark
             if index >= 1
               value1 = times[index-1]
               value2 = time
-              publish_intervals << (value2-value1) if (value2-value1)
+              diff = (value2-value1)
+              publish_intervals << diff if diff && diff < 10000
             end
           end
         end
         publish_intervals.delete(0.0)
-        publish_intervals
+        puts publish_intervals.sort.inspect
 
-        result = Statistics::Dayly.histogramm_from_array(publish_intervals, 45, true)
+        result = Statistics::Dayly.histogramm_from_array(publish_intervals, 150, false)
 
         highcharts_data = LazyHighCharts::HighChart.new('graph') do |f|
           f.title({ :text=>"Histogramm Zeitraum zwischen Veröffentlichungen eines #{service} Artikels innerhalb eines Streams"})
@@ -703,6 +710,7 @@ module RsBenchmark
       wsd = []
       wr = []
       timestamps = []
+
 
       result.each do |result|
         wsf << result["value"]["stream_fetcher_count"]
@@ -1143,6 +1151,13 @@ module RsBenchmark
       @histogramm_abo_count = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"AbonnentInnen Anzahlen pro Stream"})
         f.options[:chart][:zoomType] = "x"
+        f.options[:xAxis][:plotLines] = [{
+          value: sum/GlobalStream::Rss.count.to_f,
+          color: '#ff0000',
+          width:2,
+          zIndex:4,
+          label:{text:"Durchschnitt #{(sum/GlobalStream::Rss.count.to_f).round(2)}"}
+        }]
         f.options[:xAxis][:categories] = gs_stats.map do |array| array[0] end
         f.options[:xAxis][:type] = "linear"
         f.options[:xAxis][:title] = { text: "AbonnentInnen Anzahl" }
@@ -1150,14 +1165,7 @@ module RsBenchmark
             title: {
               text: 'Häufigkeit'
             },
-            min: 0,
-            plotLines:[{
-              value: sum/GlobalStream::Rss.count.to_f,
-              color: '#ff0000',
-              width:2,
-              zIndex:4,
-              label:{text:"Durchschnitt #{(sum/GlobalStream::Rss.count.to_f).round(2)}"}
-            }]
+            min: 0
           }]
 
         f.series(:type=> 'column',:name=> 'Häufigkeit',

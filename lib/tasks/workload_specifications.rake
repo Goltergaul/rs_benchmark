@@ -1,8 +1,13 @@
-namespace :benchmark do
+namespace :rs_benchmark do
   task :generate_specs => :environment do
     @yaml_hash = {}
     @yaml_hash.deep_merge!("user_feed_ratio" => GlobalStream::Rss.count/User.count.to_f)
-    @yaml_hash.deep_merge!("facebook_twitter_stream_ratio" => User.elem_match(:authentications => {:_type => "User::Authentication::Twitter"}).count/User.elem_match(:authentications => {:_type => "User::Authentication::Facebook"}).count.to_f)
+
+
+    tw_count = User.elem_match(:authentications => {:_type => "User::Authentication::Twitter"}).where(:authentications.with_size => 1).count
+    fb_count = User.elem_match(:authentications => {:_type => "User::Authentication::Facebook"}).where(:authentications.with_size => 1).count
+    fb_probabillity = fb_count/(tw_count+fb_count).to_f
+    @yaml_hash.deep_merge!("facebook_twitter_stream_probabillity" => fb_probabillity)
     @yaml_hash.deep_merge!(Statistics::Dayly.extract_workload_spec RsBenchmark::Logger::RsBenchmarkLogger.where("event" => "worker_stream_fetcher"), "streams", "stream_entries_count", 20, "data")
     ["rss", "facebook", "twitter"].each do |service|
       @yaml_hash.deep_merge!(Statistics::Dayly.extract_workload_spec RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank", "data.service" => service), "#{service}_properties", "body_length", 400, "data", false)

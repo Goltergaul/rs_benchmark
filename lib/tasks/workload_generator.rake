@@ -119,6 +119,10 @@ namespace :benchmark do
 
       puts "Dropping Database..."
       User.collection.database.drop
+
+      puts "Creating database indexes..."
+      Rails::Mongoid.create_indexes
+
       RedisStore.new.flushall
 
       # load monkey patches streams
@@ -161,12 +165,11 @@ namespace :benchmark do
       # choose random private stream and make sure not to choose two times the same for the same user
       def create_private_stream user
         type = ""
-        if @rand.uniform > 0.5
+        if @rand.uniform > @probabilities[:facebook_twitter_stream_probabillity].to_f
           type = "User::Authentication::Twitter"
         else
           type = "User::Authentication::Facebook"
         end
-
         if user.authentications.first && user.authentications.first._type == "User::Authentication::Twitter"
           type = "User::Authentication::Facebook"
         end
@@ -199,7 +202,7 @@ namespace :benchmark do
             "access_secret" => "abcedefewfwe"
           })
 
-          BenchmarkStreamServer::Cache.instance.add_stream :url => "#{STREAM_SERVER}/twitter/#{access_token}", :length => 100, :id => access_token, :type => :twitter
+          BenchmarkStreamServer::Cache.instance.add_stream :url => "#{STREAM_SERVER}/twitter/#{access_token}", :length => 200, :id => access_token, :type => :twitter
         end
 
         user.authentications = authentications
@@ -240,7 +243,7 @@ namespace :benchmark do
         user_profile[:rated_entries].times do
           begin
             user.vote @rand.uniform_int(5)+1, Entry.offset(@rand.uniform_int(entry_count)).first
-          rescue
+          rescue Exception => e
             puts "Warning: Vote failed due to implementation error"
           end
         end
