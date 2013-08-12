@@ -1,12 +1,13 @@
-namespace :benchmark do
+namespace :rs_benchmark do
 
   task :generate_workload_file => :environment do
     throw "You must specify environment variable 'dump_folder'" unless ENV["dump_folder"]
 
-    Rake::Task["benchmark:workload_generators:initialize_environment"].invoke
-    Rake::Task["benchmark:workload_generators:create_setup"].invoke
+    Rake::Task["rs_benchmark:workload_generators:initialize_environment"].invoke
+    Rake::Task["rs_benchmark:workload_generators:create_setup"].invoke
 
     Entry.collection.drop
+    RsBenchmark::Logger::RsBenchmarkLogger.collection.drop
 
     dump_name = "user_count_#{ENV["user_count"]}_seed_#{ENV["seed"]}"
     puts "mongodump -d #{Entry.collection.database.name} -h #{Mongoid.default_session.cluster.seeds.first} -o #{ENV["dump_folder"]}/#{dump_name}"
@@ -18,7 +19,7 @@ namespace :benchmark do
 
   task :generate_workload => :environment do
     begin
-      Rake::Task["benchmark:workload_generators:initialize_environment"].invoke
+      Rake::Task["rs_benchmark:workload_generators:initialize_environment"].invoke
 
       puts "Starting stream simulation server..."
       # start stream server in another thread
@@ -32,6 +33,11 @@ namespace :benchmark do
         curl.headers["Content-type"] = "application/json"
       end
 
+      # for testing first solr versions (needs to clear standard core)
+      Curl::Easy.http_post("http://#{solr_config["host"]}:#{solr_config["port"]}/solr/update?commit=true", {"delete" => { "query" => "*:*" }}.to_json) do |curl|
+        curl.headers["Content-type"] = "application/json"
+      end
+
       if ENV["setup_from_folder"]
         puts "Importing setup from #{ENV["setup_from_folder"]}/#{Entry.collection.database.name}/..."
         puts `mongorestore -d #{Entry.collection.database.name} -h #{Mongoid.default_session.cluster.seeds.first} #{ENV["setup_from_folder"]}/#{Entry.collection.database.name}/`
@@ -39,11 +45,15 @@ namespace :benchmark do
         puts "Importing Stream Server cache from file #{ENV["setup_from_folder"]}/cache_dump.yml"
         BenchmarkStreamServer::Cache.instance.import "#{ENV["setup_from_folder"]}/cache_dump.yml"
       else
-        Rake::Task["benchmark:workload_generators:create_setup"].invoke
+        Rake::Task["rs_benchmark:workload_generators:create_setup"].invoke
       end
 
+      # remove indexes from write only classes that are only used for stats collection
+      RsBenchmark::Logger::RsBenchmarkLogger.remove_indexes
+      RsBenchmark::ResponseTime::RsBenchmarkResponseTime.remove_indexes
+
       # generate stream schedules
-      Rake::Task["benchmark:workload_generators:prepare_login_chains"].invoke
+      Rake::Task["rs_benchmark:workload_generators:prepare_login_chains"].invoke
 
       WorkloadInducer::Inducer.instance.induce!(sinatra_thread)
       sinatra_thread.join
@@ -61,9 +71,9 @@ namespace :benchmark do
       puts `mongorestore -d #{Entry.collection.database.name} -h #{Mongoid.default_session.cluster.seeds.first} #{fixtures_path}`
 
       # create streams
-      Rake::Task["benchmark:workload_generators:setup_streams"].invoke
+      Rake::Task["rs_benchmark:workload_generators:setup_streams"].invoke
       # setup users
-      Rake::Task["benchmark:workload_generators:setup_users"].invoke
+      Rake::Task["rs_benchmark:workload_generators:setup_users"].invoke
     end
 
     task :initialize_environment do
@@ -121,12 +131,12 @@ namespace :benchmark do
       User.collection.database.drop
 
       puts "Creating database indexes..."
-      Rails::Mongoid.create_indexes
+      Rails::Mongoid.create_indexes("**/*.rb")
 
       RedisStore.new.flushall
 
       # load monkey patches streams
-      Rake::Task["benchmark:workload_generators:load_monkey_patches"].invoke
+      Rake::Task["rs_benchmark:workload_generators:load_monkey_patches"].invoke
     end
 
     task :load_monkey_patches do
@@ -153,7 +163,7 @@ namespace :benchmark do
         @stream_counter += 1
 
         # save stream config for stream server
-        BenchmarkStreamServer::Cache.instance.add_stream :url => url, :length => stream_length_generator.pick, :id => i, :type => :rss
+        BenchmarkStreamServer::Cache.instance.add_stream :url => url, :length => stream_length_generator.pick.round(0), :id => i, :type => :rss
       end
     end
 
@@ -210,6 +220,7 @@ namespace :benchmark do
         @uuid += 1
       end
 
+      rss_abo_count_generator = RsBenchmark::UrnRandomGenerator.new(@probabilities[:rss_user_count], BenchmarkStreamServer::SEED)
       @user_count.times do |i|
         user = User.new(
           :email => "testuser#{i}@test.com",
@@ -230,15 +241,13 @@ namespace :benchmark do
         gs_ids = []
         user_profile[:global_stream_count].times do |gs_count|
           stream_config = {}
-          while stream_config[:type] != :rss do
-            stream_config = BenchmarkStreamServer::Cache.instance.pick_stream
-          end
+          stream_config = BenchmarkStreamServer::Cache.instance.pick_rss_stream(rss_abo_count_generator.pick)
           gs_ids << GlobalStream::Rss.where(:url => stream_config[:url]).first.id
         end
         user.global_stream_ids = gs_ids
         user.save!
 
-        # create ratings for taht profile
+        # create ratings for that profile
         entry_count = Entry.count
         user_profile[:rated_entries].times do
           begin
@@ -264,7 +273,7 @@ namespace :benchmark do
         interval_generator = RsBenchmark::PseudoRandomGenerator.new(user_profile[:reschedule_intervals], BenchmarkStreamServer::SEED)
 
         task_count = 0
-        max_task_count = 20
+        max_task_count = 1000
         first_task_of_chain = task_chain = WorkloadInducer::UserScheduleTask.new({:wait_time => interval_generator.pick.minutes * SCALE_FACTOR, :user_id => user.id})
         while(task_count < max_task_count) do
           task = WorkloadInducer::UserScheduleTask.new({:wait_time => interval_generator.pick.minutes * SCALE_FACTOR, :user_id => user.id})

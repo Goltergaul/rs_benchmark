@@ -1,17 +1,20 @@
 require "gsl"
+require "bigdecimal"
 
 module RsBenchmark
   class PseudoRandomGenerator
 
     def initialize distribution, seed=rand
-      @distribution = distribution
+      @distribution = {}
+      distribution.each do |value, probabillity|
+        @distribution[value] = BigDecimal.new(probabillity.to_s)
+      end
       @rnd = GSL::Rng.alloc("gsl_rng_mt19937", seed)
     end
 
     def pick
-      float = @rnd.uniform
-      from = to = 0.0
-      total = 0
+      float = BigDecimal.new(@rnd.uniform.to_s)
+      from = to = BigDecimal.new("0.0")
       value = nil
       @distribution.each do |value, probabillity|
         to += probabillity

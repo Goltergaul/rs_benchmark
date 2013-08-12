@@ -1,10 +1,4 @@
-<%= raw JSON.pretty_generate @user_reschedule_statistics %>
-
 <%= high_chart("histogramm_user_reschedule_interval", @histogramm_user_reschedule_interval) %>
-
-<%= high_chart("histogramm_user_reschedule_interval_one_user", @histogramm_user_reschedule_interval_one_user) %>
-
-<%= raw @histogramm_probabillities.to_yaml %>
 
 Anzahl an Usern: <%= User.count %><br>
 Anzahl an verschiedenen Global Streams: <%= GlobalStream.count %><br>
@@ -13,6 +7,8 @@ Anzahl User ohne streams: <%= Statistics::Dayly.where("value.type" => "user_stat
 <%= high_chart("user_stats_global_stream_counts", @user_stats_global_stream_counts) %>
 
 <%= high_chart("user_stats_private_stream_counts", @user_stats_private_stream_counts) %>
+
+<%= high_chart("histogramm_abo_count", @histogramm_abo_count) %>
 
 <h1>Artikellängen</h1>
 <%= high_chart("histogramm_rss_article_length", @histogramm_rss_article_length) %>

@@ -6,16 +6,20 @@
     <td>Mean</td>
     <td>Median</td>
     <td>Sd</td>
+    <td>90%-Quantil</td>
   </tr>
   <% @chart_data.each do |key, data| %>
     <tr>
       <td><%= key %></td>
-      <td><%= data["mean"] %></td>
-      <td><%= data["median"] %></td>
-      <td><%= data["sd"] %></td>
+      <td><%= data["mean_values_real"] %></td>
+      <td><%= data["median_values_real"] %></td>
+      <td><%= data["sd_values_real"] %></td>
+      <td><%= data["quantil_90_values_real"] %></td>
     </tr>
   <% end %>
 </table>
+Maximum Output: <%= @max_sum_out_per_minute %>/minute<br/>
+POFOD: <%= @pofod %><br/>
 
 <%= high_chart("histogram_feed_first_arrival_times", @histogram_feed_first_arrival_times) %>
 <%= high_chart("histogram_feed_last_arrival_times", @histogram_feed_last_arrival_times) %>

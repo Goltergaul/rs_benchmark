@@ -57,6 +57,7 @@ module WorkloadInducer
           puts "Using ramp up mode with #{ENV["ramp_up_delay"]} seconds delay"
           ramp_up_stepsize = ENV["ramp_up_step"].nil? ? 1 : ENV["ramp_up_step"].to_i
           @chains.each_slice(ramp_up_stepsize).with_index do |tasks, index|
+            next if index*ramp_up_stepsize >= ENV["user_count"].to_i
             EM.add_timer ENV["ramp_up_delay"].to_i*index, proc {
               puts "\nNext ramp step reached. Starting another #{ramp_up_stepsize} chains"
               @steps_done += ramp_up_stepsize

@@ -12,6 +12,7 @@ module RsBenchmark
       index({:environment => 1}, {:background => true})
       index({"data.time" => 1}, {:background => true})
       index "data.service" => 1
+      index "data.stream" => 1
 
       attr_accessible :event, :data, :environment
 
@@ -45,7 +46,7 @@ module RsBenchmark
     end
 
     def set_options options
-      throw "option :activated not set!" unless options[:activated]
+      throw "option :activated not set!" unless options.has_key? :activated
       @options = options
     end
 

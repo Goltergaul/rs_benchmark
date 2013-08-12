@@ -25,6 +25,7 @@ Gem::Specification.new do |gem|
   gem.add_dependency 'activerecord'
   gem.add_dependency 'mysql2'
   gem.add_dependency 'lazy_high_charts'
+  gem.add_dependency 'ruby-prof'
 
   gem.add_development_dependency 'debugger'
 end

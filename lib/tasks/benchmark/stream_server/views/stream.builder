@@ -10,7 +10,9 @@ xml.feed :xmlns => "http://www.w3.org/2005/Atom" do
   for post in locals[:articles]
     xml.entry do
       xml.title post[:title]
-      xml.content post[:body]
+      xml.content do
+        xml.cdata! post[:body]
+      end
       xml.updated post[:pub_date]
       xml.link :href => post[:link]
     end

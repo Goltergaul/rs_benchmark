@@ -3,6 +3,7 @@ require "lazy_high_charts"
 require "gsl"
 
 module RsBenchmark
+
   class StatisticsController < RsBenchmark::ApplicationController
     layout "stats"
     http_basic_authenticate_with :name => Engine.benchmark_config[:access_control][:user], :password => Engine.benchmark_config[:access_control][:password]
@@ -16,24 +17,32 @@ module RsBenchmark
       map = %Q{
         function() {
           if(this.tag.match(/^response_time/)) {
-            var minute = (Math.ceil(this.data.time.getUTCMinutes()/5)*5); // build mean over every 5 minutes
+            var minute = (Math.ceil(this.data.time.getUTCMinutes()/10)*10); // build mean over every 10 minutes
             var time = new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), minute);
-            time = new Date(time - 2.5 * 1000 * 60);
+            time = new Date(time - 5 * 1000 * 60);
             emit(this.tag+time, {
               real_sum: this.data.real,
               real_count: 1,
               utime_sum: this.data.utime,
               utime_count: 1,
+              stime_sum: this.data.stime,
+              stime_count: 1,
               time: +time,
               tag: this.tag
             });
           } else {
-            emit(this.tag+this.data.time.getUTCDate()+this.data.time.getUTCHours()+this.data.time.getUTCMinutes(), {
+            var minute = (Math.ceil(this.data.time.getUTCMinutes()/5)*5); // build mean over every 5 minutes
+            var time = new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), minute);
+            time = new Date(time - 2.5 * 1000 * 60);
+            //var time = new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), this.data.time.getMinutes());
+            emit(this.tag+time, {
               real_sum: this.data.real,
               real_count: 1,
               utime_sum: this.data.utime,
               utime_count: 1,
-              time: +new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), this.data.time.getMinutes()),
+              stime_sum: this.data.stime,
+              stime_count: 1,
+              time: +time,
               tag: this.tag
             });
           }
@@ -42,12 +51,14 @@ module RsBenchmark
 
       reduce = %Q{
         function(key, values) {
-          var result = { real_sum: 0, real_count: 0, utime_sum: 0, utime_count: 0, time: null, tag: null };
+          var result = { real_sum: 0, real_count: 0, utime_sum: 0, utime_count: 0, stime_count: 0, stime_sum: 0, time: null, tag: null };
           values.forEach(function(value) {
               result.real_sum += value.real_sum;
               result.real_count += value.real_count;
               result.utime_sum += value.utime_sum;
               result.utime_count += value.utime_count;
+              result.stime_sum += value.stime_sum;
+              result.stime_count += value.stime_count;
               result.time = value.time;
               result.tag = value.tag;
           });
@@ -59,6 +70,7 @@ module RsBenchmark
         function(key, value) {
           value.real_mean = value.real_sum/value.real_count;
           value.utime_mean = value.utime_sum/value.utime_count;
+          value.stime_mean = value.stime_sum/value.stime_count;
           return value;
         }
       }
@@ -70,19 +82,26 @@ module RsBenchmark
 
       @chart_data = {}
       results.each do |bm|
-        @chart_data[bm["value"]["tag"]] = { "values" => []} unless @chart_data[bm["value"]["tag"]]
-        @chart_data[bm["value"]["tag"]]["values"] << [bm["value"]["time"].to_i, bm["value"]["real_mean"]]
+        @chart_data[bm["value"]["tag"]] = { "values_real" => [], "values_utime" => [], "values_stime" => []} unless @chart_data[bm["value"]["tag"]]
+        @chart_data[bm["value"]["tag"]]["values_real"] << [bm["value"]["time"].to_i, bm["value"]["real_mean"]]
+        @chart_data[bm["value"]["tag"]]["values_utime"] << [bm["value"]["time"].to_i, bm["value"]["utime_mean"]]
+        @chart_data[bm["value"]["tag"]]["values_stime"] << [bm["value"]["time"].to_i, bm["value"]["stime_mean"]]
       end
       @chart_data.each do |key, data|
-        data["values"] = data["values"].sort_by { |k| k[0] } # sort by time
-        vector = GSL::Vector.alloc(data["values"].map do |a| a[1] end).sort
-        data["mean"] = vector.mean
-        data["sd"] = vector.sd
-        data["median"] = vector.median_from_sorted_data
-        data["quantil_90"] = calculate_percentile(data["values"].map do |a| a[1] end, 0.9)
+        ["values_real","values_utime","values_stime"].each do |values_type|
+          data[values_type] = data[values_type].sort_by { |k| k[0] } # sort by time
+          values_array = data[values_type].map do |a|
+            a[1]
+          end
+          vector = GSL::Vector.alloc(values_array)
+          data["mean_#{values_type}"] = vector.mean
+          data["sd_#{values_type}"] = vector.sd
+          data["median_#{values_type}"] = vector.median_from_sorted_data
+          data["quantil_90_#{values_type}"] = calculate_percentile(values_array, 0.9)
+        end
       end
 
-      # user numbers
+      # user counts
       ramp_up_steps = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag => "ramp_up_step").between("data.time" => from_time..to_time).asc("data.time")
       user_counts = []
       last_step_count = 0
@@ -92,22 +111,23 @@ module RsBenchmark
         last_step_count = bm.data["new_step_count"]
       end
 
-      # failure/success rate
+      # POFOD
       map = %Q{
         function() {
+          var minute = (Math.ceil(this.data.time.getUTCMinutes()/5)*5); // build mean over every 5 minutes
+          var time = new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), minute);
+          time = new Date(time - 2.5 * 1000 * 60);
           if(this.tag == "failure") {
-            emit(this.data.time.getUTCDate()+this.data.time.getUTCHours()+Math.floor(this.data.time.getUTCMinutes()), {
+            emit(time.toString(), {
               failure_count: 1,
               success_count: 0,
-              type: this.tag,
-              time: new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), this.data.time.getMinutes())
+              time: time
             });
           } else {
-            emit(this.data.time.getUTCDate()+this.data.time.getUTCHours()+Math.floor(this.data.time.getUTCMinutes()), {
+            emit(time.toString(), {
               failure_count: 0,
               success_count: 1,
-              type: this.tag,
-              time: new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), this.data.time.getMinutes())
+              time: time
             });
           }
         }
@@ -115,11 +135,10 @@ module RsBenchmark
 
       reduce = %Q{
         function(key, values) {
-          var result = { time: null, type: null, failure_count: 0, success_count: 0 };
+          var result = { time: null, failure_count: 0, success_count: 0 };
           values.forEach(function(value) {
               result.failure_count += value.failure_count;
               result.success_count += value.success_count;
-              result.type = value.type;
               result.time = value.time;
           });
           return result;
@@ -141,20 +160,31 @@ module RsBenchmark
       end
       failure_ratio = failure_ratio.sort_by { |k| k[0] } # sort by time
 
-      # io rate
+      # overall pofod
+      success_count = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag => "success").between("data.time" => from_time..to_time).count
+      failure_count = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag => "failure").between("data.time" => from_time..to_time).count
+      @pofod = failure_count/success_count.to_f
 
+
+      # IO Rate
       map = %Q{
         function() {
           var time = new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), this.data.time.getMinutes());
-          if(this.data.worker == "Workers::Rank") {
-            emit(this.data.time.getUTCDate()+this.data.time.getUTCHours()+this.data.time.getUTCMinutes(), {
+          if((this.data.worker == "Workers::Rank" && this.tag == "success") ||
+            this.tag == "failure" && (this.data.worker != "Workers::StreamFetcher" && this.data.worker != "Workers::ExistenceChecker")) {
+            // this counts as output (when successful output of ranker or failure in all but stream fetcher & existence checker)
+            emit(time.toString(), {
               count_in: 0,
               count_out: 1,
               type: this.tag,
               time: time
             });
-          } else {
-            emit(this.data.time.getUTCDate()+this.data.time.getUTCHours()+this.data.time.getUTCMinutes(), {
+          }
+
+          if(this.tag == "success" && this.data.worker == "Workers::ExistenceChecker") {
+          //if(this.tag == "enqueue")
+            // this counts as input
+            emit(time.toString(), {
               count_in: 1,
               count_out: 0,
               type: this.tag,
@@ -178,10 +208,13 @@ module RsBenchmark
 
       accumulated_count_in = 0
       accumulated_count_out = 0
-      input_rate = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag => "success").where(:"data.worker".in => ["Workers::ExistenceChecker", "Workers::Rank"])
+      @max_sum_out_per_minute = 0
+      input_rate = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag.in => ["success","enqueue","failure"])
         .between("data.time" => from_time..to_time).map_reduce(map, reduce).out(:inline => 1).map do |bm|
+          @max_sum_out_per_minute = bm["value"]["count_out"] if @max_sum_out_per_minute < bm["value"]["count_out"]
           [bm["value"]["time"].utc.to_i * 1000, bm["value"]["count_in"], bm["value"]["count_out"]]
       end
+
       input_rate = input_rate.sort_by { |k| k[0] } # sort by time
       input_rate.each do |value|
         accumulated_count_out += value[2]
@@ -191,16 +224,47 @@ module RsBenchmark
         value[1] = accumulated_count_in
       end
 
-      # output_rate = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag => "success", :"data.type" => "Workers::Rank")
-      #   .between("data.time" => from_time..to_time).map_reduce(map, reduce).out(:inline => 1).map do |bm|
-      #     [bm["value"]["time"].utc.to_i * 1000, bm["value"]["success_count"]]
-      # end
+      # Throughputs
+      @throughputs = {}
+
+      map = %Q{
+        function() {
+          /*var minute = (Math.ceil(this.data.time.getUTCMinutes()/5)*5); // build mean over every 5 minutes
+          var time = new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), minute);
+          time = new Date(time - 2.5 * 1000 * 60);*/
+
+          var time = new Date(this.data.time.getFullYear(), this.data.time.getMonth(), this.data.time.getDate(), this.data.time.getHours(), this.data.time.getMinutes());
+          emit(this.data.worker+time.toString(), {
+            count: 1,
+            worker: this.data.worker,
+            time: time
+          });
+        }
+      }
+
+      reduce = %Q{
+        function(key, values) {
+          var result = { time: null, worker: null, count: 0 };
+          values.forEach(function(value) {
+            result.count += value.count;
+            result.time = value.time;
+            result.worker = value.worker;
+          });
+          return result;
+        }
+      }
+
+      throughput_values = RsBenchmark::ResponseTime::RsBenchmarkResponseTime.where(:tag => "success")
+        .between("data.time" => from_time..to_time).map_reduce(map, reduce).out(:inline => 1).each do |bm|
+        @throughputs[bm["value"]["worker"]] = [] unless @throughputs[bm["value"]["worker"]]
+        @throughputs[bm["value"]["worker"]] << [bm["value"]["time"].utc.to_i * 1000, bm["value"]["count"]]
+      end
 
       @chart_response_times = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Antwortzeiten"})
         f.options[:chart][:zoomType] = "x"
         f.options[:xAxis][:type] = "datetime"
-        f.options[:chart][:height] = "500"
+        f.options[:chart][:height] = "750"
         f.options[:plotOptions] = {
           :series => {
             :marker => {
@@ -211,11 +275,11 @@ module RsBenchmark
 
         f.options[:yAxis] = [{
           title: {
-            text: 'Dauer [s]'
+            text: 'Response Time [s]'
           },
           min: 0,
-          plotLines: []
-          # max: 10
+          plotLines: [],
+          #max: 2.5
         },
         {
           title: {
@@ -225,24 +289,30 @@ module RsBenchmark
         },
         {
           title: {
-            text: 'Feedverarbeitungsdauer [s]'
+            text: 'Streamverarbeitungsdauer [s]'
           },
           min: 0,
-          # max: 400
+          #max: 500
         },
         {
           title: {
             text: 'Fehlerrate'
           },
           min: 0,
-          # max: 400
+          #max: 0.016
         },
         {
           title: {
-            text: 'Anzahl an Artikeln'
+            text: 'Anzahl an Artikeln in Verarbeitung'
+          },
+          min: 0
+        },
+        {
+          title: {
+            text: 'Throughput [pro 5 Minuten]'
           },
           min: 0,
-          # max: 400
+          #max: 2000
         }]
 
         f.series(:type=> 'arearange',:name=> "Anzahl an Artikeln in Verarbeitung (Fläche) Oberkante = Anzahl zu verarbeitender Artikel, Unterkante = Verarbeitete Artikel",
@@ -251,36 +321,45 @@ module RsBenchmark
 
         f.series(:type=> 'line',:name=> "Useranzahl",
             :data => user_counts, :yAxis => 1,
-            :lineWidth => 1, :color => "#0000ff")
+            :lineWidth => 1, :color => "#000000")
 
         f.series(:type=> 'line',:name=> "Fehlerrate",
             :data => failure_ratio, :yAxis => 3,
-            :lineWidth => 1, :color => "#ff0000")
+            :lineWidth => 1, :color => "#ff0000", :visible => false)
 
         colors = ["#ffca00", "#47ff00", "#00ffff", "#00a5ff", "#c300ff", "#ff00e1"]
 
         @chart_data.each do |key, data|
-          f.series(:type=> 'spline',:name=> key,
-            :data => data["values"], :yAxis => key.match(/response/)? 2 : 0,
-            :lineWidth => key.match(/response/)? 2 : 1, :color => colors.pop)
+          ["values_real","values_utime","values_stime"].each do |values_type|
+            f.series(:type=> 'spline',:name=> "#{key} #{values_type}",
+              :data => data[values_type], :yAxis => key.match(/response/)? 2 : 0,
+              :lineWidth => key.match(/response/)? 2 : 1, :color => colors.pop, :visible => false)
 
-          # if key == "consume_Workers::Rank"
-          #  f.options[:yAxis][0][:plotLines] << {
-          #     value: data["quantil_90"],
-          #     color: '#ff0000',
-          #     width:2,
-          #     zIndex:4,
-          #     label:{text:"90%-Quantil #{data["quantil_90"].round(2)}"}
-          #   }
+            # if key == "consume_Workers::Rank"
+            #  f.options[:yAxis][0][:plotLines] << {
+            #     value: data["quantil_90"],
+            #     color: '#ff0000',
+            #     width:2,
+            #     zIndex:4,
+            #     label:{text:"90%-Quantil #{data["quantil_90_#{values_type}"].round(2)}"}
+            #   }
 
-          #   f.options[:yAxis][0][:plotLines] << {
-          #     value: data["mean"],
-          #     color: '#ff0000',
-          #     width:2,
-          #     zIndex:4,
-          #     label:{text:"Durchschnitt #{data["mean"].round(2)}"}
-          #   }
-          # end
+            #   f.options[:yAxis][0][:plotLines] << {
+            #     value: data["mean"],
+            #     color: '#ff0000',
+            #     width:2,
+            #     zIndex:4,
+            #     label:{text:"Durchschnitt #{data["mean_#{values_type}"].round(2)}"}
+            #   }
+            # end
+          end
+        end
+
+        colors = ["#ffca00", "#47ff00", "#00ffff", "#00a5ff", "#c300ff", "#ff00e1"]
+        @throughputs.each do |key, values|
+          f.series(:type=> 'spline',:name=> "throughput #{key}",
+              :data => values, :yAxis => 5,
+              :lineWidth => 1, :color => colors.pop, :visible => false)
         end
       end
 
@@ -330,58 +409,79 @@ module RsBenchmark
 
     end
 
-    def wichtig
+    def index
+      # gather statistics used for various diagramms
+      user_data = {}
 
-      @user_reschedule_statistics = RsBenchmark::Data.get_mean_and_stdev_by_user("reschedule_stream_updates")
+      User.all.each do |user|
+        user_data.deep_merge!({"user_profile" => {user.id.to_s => {"global_stream_count" => user.global_streams.count, "private_streams_count" => user.authentications.count}}})
+      end
 
-      # get intervals per user for rescheduling streams
+
       grouped_by_user = RsBenchmark::Data.get_intervals_grouped_by_user_id("reschedule_stream_updates")
+      grouped_by_user.each do |user_id, data|
+        user = User.where(:id => user_id).first
+        next unless user
+        next if user.current_sign_in_at - user.created_at < 2.weeks
+        next if data[:intervals].count < 10 # use only users that logged in at least 20 times for more representative data
 
-      # render :text => grouped_by_user.inspect
-      # return
-
-      user_id = grouped_by_user.keys.first
-      histogramm_data = Statistics::Dayly.histogramm_from_array(grouped_by_user[user_id][:intervals], 50, true)
-
-      @histogramm_user_reschedule_interval_one_user = LazyHighCharts::HighChart.new('graph') do |f|
-        f.title({ :text=>"Histogramm Zeitraum zwischen Reschedules der NutzerIn #{user_id}"})
-        f.options[:xAxis][:type] = "linear"
-        f.options[:yAxis][:type] = "logarithmic"
-        f.options[:xAxis][:tile] = "Intervale in Minuten"
-        f.options[:xAxis][:categories] = histogramm_data[:labels]
-        f.options[:chart][:zoomType] = "x"
-        f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right' }
-
-        f.series(:type=> 'column',:name=> user_id,
-          :data => histogramm_data[:data], :color => "#005fad", dataLabels: {
-            enabled: true
-          })
+        user_data.deep_merge!({"user_profile" => {user_id.to_s => {"reschedule_intervals" => data[:intervals]}}})
       end
 
-      intervals = grouped_by_user.sum do |user_id, data|
-        data[:intervals]
-      end
-      histogramm_data = Statistics::Dayly.histogramm_from_array(intervals, 50, true)
 
-      @histogramm_user_reschedule_interval = LazyHighCharts::HighChart.new('graph') do |f|
-        f.title({ :text=>"Histogramm Zeitraum zwischen Reschedules aller NutzerInnen"})
-        f.options[:xAxis][:type] = "linear"
-        f.options[:yAxis][:type] = "logarithmic"
-        f.options[:xAxis][:tile] = "Intervale in Minuten"
-        f.options[:xAxis][:categories] = histogramm_data[:labels]
-        f.options[:chart][:zoomType] = "x"
-        f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right' }
-
-        f.series(:type=> 'column',:name=> "Häufigkeit",
-          :data => histogramm_data[:data], :color => "#005fad", dataLabels: {
-            enabled: true
-          })
+      grouped_by_user = {}
+      Rating.all.each do |rating|
+        grouped_by_user[rating.user_id.to_s] = {:times => [], :intervals => []} unless grouped_by_user[rating.user_id.to_s]
+        grouped_by_user[rating.user_id.to_s][:times] << rating.created_at
       end
 
-      puts "logininterval fertig"
+      grouped_by_user.each do |user_id, data|
+        times = data[:times].sort
+        times.each_with_index do |time, index|
+          if index >= 1
+            value1 = times[index-1]
+            value2 = time
+            grouped_by_user[user_id][:intervals] << (value2-value1)/60.0
+          end
+        end
+        data[:intervals].delete(nil)
+      end
+      grouped_by_user
+
+      mean_of_means_sum = 0
+      mean_of_means_count = 0
+      grouped_by_user.each do |user_id, data|
+        next if data[:intervals].count < 25
+        user = User.find(user_id)
+        next if user.current_sign_in_at - user.created_at < 2.weeks
+        mean = data[:intervals].sum/data[:intervals].count.to_f
+        mean_of_means_sum += mean
+        mean_of_means_count += 1
+        user_data.deep_merge!({"user_voting" => {user_id => { "email" => user.email, "mean" => mean }}})
+      end
+      user_data.deep_merge!({"user_voting" => { "mean" => mean_of_means_sum/mean_of_means_count.to_f}})
+
+
+      User.all.each do |user|
+        next if user.current_sign_in_at - user.created_at < 2.weeks
+        user_data.deep_merge!({"user_profile" => { user.id.to_s => {
+          "word_count" => user.attribute_ratings.where(:kind => "word").count,
+          "rated_entries" => Rating.where(:user_id => user.id).count
+        }}})
+      end
+
+      user_data["user_profile"].each do |user_id, profile|
+        user_data["user_profile"].delete(user_id) if !profile.has_key?("word_count") ||
+          !profile.has_key?("rated_entries") || !profile.has_key?("reschedule_intervals") ||
+          !profile.has_key?("global_stream_count") || !profile.has_key?("private_streams_count")
+      end
 
       # ####### histogramm user anzahl an global streams
-      result = Statistics::Dayly.histogramm(Statistics::Dayly.where("value.type" => "user_stats"), "global_streams_count", 20)
+      g_stream_counts = user_data["user_profile"].map do |user_id, profile|
+        profile["global_stream_count"]
+      end
+      result = Statistics::Dayly.histogramm_from_array(g_stream_counts, 20)
+
       sum = 0
       result[:data].each_with_index do |data, i|
         sum += data*result[:labels][i]
@@ -390,13 +490,14 @@ module RsBenchmark
       @user_stats_global_stream_counts = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Histogramm über die Anzahl an globalen Streams pro User"})
         f.options[:xAxis][:type] = "linear"
+        f.options[:chart][:height] = "300"
         f.options[:chart][:zoomType] = "x"
         f.options[:xAxis][:plotLines] = [{
-          value: sum/User.count,
+          value: sum/result[:data].sum.to_f,
           color: '#ff0000',
           width:2,
           zIndex:4,
-          label:{text:"Durchschnitt #{(sum/User.count).round(2)}"}
+          label:{text:"Durchschnitt #{(sum/result[:data].sum.to_f).round(2)}"}
         }]
         f.options[:xAxis][:categories] = result[:labels]
         f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right' }
@@ -416,7 +517,11 @@ module RsBenchmark
       puts "user glob stream fertig"
 
       # ####### histogramm user anzahl an privaten streams
-      result = Statistics::Dayly.histogramm(Statistics::Dayly.where("value.type" => "user_stats"), "private_streams_count", 20)
+      p_stream_counts = user_data["user_profile"].map do |user_id, profile|
+        profile["private_streams_count"]
+      end
+      result = Statistics::Dayly.histogramm_from_array(p_stream_counts, 3)
+
       sum = 0
       result[:data].each_with_index do |data, i|
         sum += data*result[:labels][i]
@@ -424,13 +529,14 @@ module RsBenchmark
 
       @user_stats_private_stream_counts = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Histogramm über die Anzahl an privater Streams pro User"})
+        f.options[:chart][:height] = "300"
         f.options[:xAxis][:type] = "linear"
         f.options[:xAxis][:plotLines] = [{
-          value: sum/User.count,
+          value: sum/result[:data].sum.to_f,
           color: '#ff0000',
           width:2,
           zIndex:4,
-          label:{text:"Durchschnitt #{(sum/User.count).round(2)}"}
+          label:{text:"Durchschnitt #{(sum/result[:data].sum.to_f).round(2)}"}
         }]
         f.options[:chart][:zoomType] = "x"
         f.options[:xAxis][:categories] = result[:labels]
@@ -449,10 +555,10 @@ module RsBenchmark
 
         f.series(:type=> 'pie',:name=> 'Verteilung Twitter/Facebook',
           :data=> [
-            {:name=> 'Facebook', :y=> User.elem_match(:authentications => {:_type => "User::Authentication::Facebook"}).count, :color=> '#3b5998'},
-            {:name=> 'Twitter', :y=> User.elem_match(:authentications => {:_type => "User::Authentication::Twitter"}).count, :color=> '#27cbfe'}
+            {:name=> 'Facebook', :y=> User.elem_match(:authentications => {:_type => "User::Authentication::Facebook"}).where(:authentications.with_size => 1).count, :color=> '#3b5998'},
+            {:name=> 'Twitter', :y=> User.elem_match(:authentications => {:_type => "User::Authentication::Twitter"}).where(:authentications.with_size => 1).count, :color=> '#27cbfe'}
           ],
-          :center=> [100, 80], :size=> 150, :showInLegend=> false, dataLabels: {
+          :center=> [50, 50], :size=> 130, :showInLegend=> false, dataLabels: {
             enabled: true,
             formatter: "function() {
                 return Math.round(this.percentage*100)/100 + '% <br>'+this.point.name;
@@ -463,10 +569,10 @@ module RsBenchmark
 
         f.options[:labels] = {
           items: [{
-            html: 'Typenverteilung',
+            html: 'Typenverteilung für einen Stream',
             style: {
-              left: '75px',
-              top: '10px',
+              left: '30px',
+              top: '-13px',
               color: 'black'
             }
           }]
@@ -475,12 +581,126 @@ module RsBenchmark
 
       puts "user private stream fertig"
 
-      ####### histogramm artikellängen rss
-      result = Statistics::Dayly.histogramm(RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank", "data.service" => "rss"), "body_length", 150, "data", false)
+      # histogramm abonnentenanzahl
+      users = user_data["user_profile"].map do |user_id, profile|
+        User.find(user_id)
+      end
 
+      global_streams = users.map do |u|
+        u.global_streams
+      end.flatten.uniq
+
+      gs_stats = {}
+      sum = 0
+      global_streams.each do |s|
+        gs_stats[s.user_ids.count] = 0 unless gs_stats[s.user_ids.count]
+        gs_stats[s.user_ids.count] += 1
+        sum += s.user_ids.count
+      end
+
+      gs_stats = gs_stats.sort_by { |key,value| -value }
+      @histogramm_abo_count = LazyHighCharts::HighChart.new('graph') do |f|
+        f.title({ :text=>"AbonnentInnen Anzahlen pro Stream"})
+        f.options[:chart][:height] = "300"
+        f.options[:chart][:zoomType] = "x"
+        f.options[:xAxis][:plotLines] = [{
+          value: sum/global_streams.count.to_f,
+          color: '#ff0000',
+          width:2,
+          zIndex:4,
+          label:{text:"Durchschnitt #{(sum/global_streams.count.to_f).round(2)}"}
+        }]
+        f.options[:xAxis][:categories] = gs_stats.map do |array| array[0] end
+        f.options[:xAxis][:type] = "linear"
+        f.options[:xAxis][:title] = { text: "AbonnentInnen Anzahl" }
+        f.options[:yAxis] = [{
+            title: {
+              text: 'Häufigkeit'
+            },
+            min: 0
+          }]
+
+        f.series(:type=> 'column',:name=> 'Häufigkeit',
+          :data => gs_stats.map do |array| array[1] end, :color => "#005fad", dataLabels: {
+            enabled: true
+          })
+      end
+
+      # login interval histogram
+      @user_reschedule_statistics = RsBenchmark::Data.get_intervals_grouped_by_user_id("reschedule_stream_updates")
+      intervals = user_data["user_profile"].sum do |user_id, data|
+        data["reschedule_intervals"]
+      end.collect { |n| n * 60 }.reject { |n| n < 1 }
+      histogramm_data = Statistics::Dayly.histogramm_from_array(intervals, 50, true)
+
+      @histogramm_user_reschedule_interval = LazyHighCharts::HighChart.new('graph') do |f|
+        f.title({ :text=>"Histogramm Zeitraum zwischen Reschedules aller NutzerInnen"})
+        f.options[:xAxis][:type] = "linear"
+        f.options[:yAxis][:type] = "logarithmic"
+        f.options[:xAxis][:tile] = "Intervale in Minuten"
+        f.options[:xAxis][:categories] = histogramm_data[:labels]
+        f.options[:chart][:zoomType] = "x"
+        f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right' }
+
+        f.series(:type=> 'column',:name=> "Häufigkeit",
+          :data => histogramm_data[:data], :color => "#005fad", dataLabels: {
+            enabled: true
+          })
+      end
+
+      puts "logininterval fertig"
+
+      # diagram adding feeds
+      grouped_by_user = {}
+      last_time = RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "reschedule_stream_updates").asc("data.time").last.data["time"]
+      RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "reschedule_stream_updates").each do |bm|
+        user = User.where(:id => bm.data["user_id"]).first
+        next unless user
+        grouped_by_user[bm.data["user_id"]] = {:last_count => 0, :points => [[user.created_at.utc.to_i*1000, 0]], :last_login => user.current_sign_in_at} unless grouped_by_user[bm.data["user_id"]]
+
+        if grouped_by_user[bm.data["user_id"]][:last_count] != bm.data["global_streams_count"]
+          grouped_by_user[bm.data["user_id"]][:last_count] = bm.data["global_streams_count"]
+          grouped_by_user[bm.data["user_id"]][:points] << [bm.data["time"].utc.to_i*1000, grouped_by_user[bm.data["user_id"]][:last_count]]
+        end
+      end
+
+      @adding_feeds = LazyHighCharts::HighChart.new('graph') do |f|
+        f.title({ :text=>"Änderungen in Anzahl abonnierter Streams"})
+        f.options[:chart][:zoomType] = "x"
+        f.options[:xAxis][:type] = "datetime"
+        f.options[:chart][:height] = "1000"
+        f.options[:plotOptions] = {
+          :series => {
+            :marker => {
+              radius: 0
+            }
+          }
+        }
+
+        f.options[:yAxis] = [{
+            title: {
+              text: 'Anzahl an abonnierten Streams'
+            },
+            min: 0
+          }]
+
+        grouped_by_user.each do |user_id, data|
+          next if data[:points].count == 0
+          f.series(:type=> 'line',:name=> user_id.to_s,
+            :data => data[:points]+[[data[:last_login].utc.to_i*1000, data[:points].last[1]]] , :yAxis => 0, :lineWidth => 1)
+        end
+      end
+
+      ###### histogramm artikellängen rss
+      # result = Statistics::Dayly.histogramm(RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank", "data.service" => "rss"), "body_length", 2670, "data", false)
+      body_lengths = Entry.where(:service => "rss").map do |entry|
+        entry.body.nil? ? 0 : entry.body.length
+      end
+      result = Statistics::Dayly.histogramm_from_array(body_lengths, 100, true)
       @histogramm_rss_article_length = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Histogramm über die Anzahl an Zeichen pro RSS Artikel"})
         f.options[:xAxis][:type] = "linear"
+        f.options[:chart][:height] = "200"
         f.options[:chart][:zoomType] = "x"
         f.options[:xAxis][:categories] = result[:labels]
         f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right', :style => {"font-size" => "15px"} }
@@ -513,11 +733,15 @@ module RsBenchmark
       puts "rss längen fertig"
 
       ####### histogramm artikellängen facebook
-      result = Statistics::Dayly.histogramm(RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank", "data.service" => "facebook"), "body_length", 150, "data", false)
-
+      # result = Statistics::Dayly.histogramm(RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank", "data.service" => "facebook"), "body_length", 2670, "data", false)
+      body_lengths = Entry.where(:service => "facebook").map do |entry|
+        entry.body.nil? ? 0 : entry.body.length
+      end
+      result = Statistics::Dayly.histogramm_from_array(body_lengths, 100, true)
       @histogramm_facebook_article_length = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Histogramm über die Anzahl an Zeichen pro Facbook Artikel"})
         f.options[:xAxis][:type] = "linear"
+        f.options[:chart][:height] = "200"
         f.options[:chart][:zoomType] = "x"
         f.options[:xAxis][:categories] = result[:labels]
         f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right', :style => {"font-size" => "15px"} }
@@ -550,11 +774,15 @@ module RsBenchmark
       puts "facebook längen fertig"
 
       ####### histogramm artikellängen twitter
-      result = Statistics::Dayly.histogramm(RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank", "data.service" => "twitter"), "body_length", 150, "data", false)
-
+      # result = Statistics::Dayly.histogramm(RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank", "data.service" => "twitter"), "body_length", 100, "data", false)
+      body_lengths = Entry.where(:service => "twitter").map do |entry|
+        entry.body.nil? ? 0 : entry.body.length
+      end
+      result = Statistics::Dayly.histogramm_from_array(body_lengths, 50)
       @histogramm_twitter_article_length = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Histogramm über die Anzahl an Zeichen pro Twitter Artikel"})
         f.options[:xAxis][:type] = "linear"
+        f.options[:chart][:height] = "200"
         f.options[:chart][:zoomType] = "x"
         f.options[:xAxis][:categories] = result[:labels]
         f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right', :style => {"font-size" => "15px"} }
@@ -586,14 +814,28 @@ module RsBenchmark
 
       puts "twitter längen fertig"
 
-      ####### histogramm feedlängen
+      ###### histogramm feedlängen
 
-      result = Statistics::Dayly.histogramm(RsBenchmark::Logger::RsBenchmarkLogger.where("event" => "worker_stream_fetcher"), "stream_entries_count", 20, "data")
+      # get average stream length of every stream
+      gs_data = GlobalStream::Rss.all.map do |gs|
+        lengths = RsBenchmark::Logger::RsBenchmarkLogger.where("event" => "worker_stream_fetcher", "data.stream" => gs.url).map do |le|
+          le.data["stream_entries_count"]
+        end
+        # build average
+        if lengths.count == 0
+          puts "no lengths for #{gs.url} found, skipping"
+          next
+        else
+          lengths.sum/lengths.count.to_f
+        end
+      end
+      result = Statistics::Dayly.histogramm_from_array(gs_data, 30)
 
       @histogramm_rss_stream_length = LazyHighCharts::HighChart.new('graph') do |f|
         f.title({ :text=>"Histogramm der verarbeiteten Streamlängen"})
         f.options[:chart][:zoomType] = "x"
         f.options[:xAxis][:categories] = result[:labels]
+        f.options[:chart][:height] = "300"
         f.options[:xAxis][:type] = "linear"
         f.options[:xAxis][:title] = { text: "Streamlänge (Anzahl an Artikeln in Stream)" }
         f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right', }
@@ -652,18 +894,19 @@ module RsBenchmark
               value1 = times[index-1]
               value2 = time
               diff = (value2-value1)
-              publish_intervals << diff if diff && diff < 10000
+              publish_intervals << diff if diff
             end
           end
         end
         publish_intervals.delete(0.0)
         puts publish_intervals.sort.inspect
 
-        result = Statistics::Dayly.histogramm_from_array(publish_intervals, 150, false)
+        result = Statistics::Dayly.histogramm_from_array(publish_intervals, 50, true)
 
         highcharts_data = LazyHighCharts::HighChart.new('graph') do |f|
           f.title({ :text=>"Histogramm Zeitraum zwischen Veröffentlichungen eines #{service} Artikels innerhalb eines Streams"})
           f.options[:xAxis][:type] = "linear"
+          f.options[:chart][:height] = "200"
           f.options[:chart][:zoomType] = "x"
           f.options[:xAxis][:categories] = result[:labels]
           f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right', :style => {"font-size" => "15px"} }
@@ -698,480 +941,6 @@ module RsBenchmark
           )
         end
         instance_variable_set "@histogramm_#{service}_publish_interval", highcharts_data
-      end
-    end
-
-    def dayly_volume
-
-      result = Statistics::Dayly.where("value.type" => "pipeline_overall")
-      wsf = []
-      wec = []
-      wfd = []
-      wsd = []
-      wr = []
-      timestamps = []
-
-
-      result.each do |result|
-        wsf << result["value"]["stream_fetcher_count"]
-        wec << result["value"]["existence_checker_count"]
-        wfd << result["value"]["fetch_details_count"]
-        wsd << result["value"]["store_db_count"]
-        wr << result["value"]["rank_count"]
-        timestamps << result["value"]["time"]
-      end
-
-      @pipeline_all = LazyHighCharts::HighChart.new('graph') do |f|
-        f.title({ :text=>""})
-        f.options[:chart][:zoomType] = "x"
-        f.options[:chart][:height] = "500"
-        f.options[:xAxis][:type] = "datetime"
-        f.options[:xAxis][:categories] = timestamps
-        f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right' }
-        f.options[:xAxis][:tickInterval] = 10
-        f.options[:plotOptions] = {
-          :series => {
-            :marker => {
-              radius: 2
-            }
-          },
-          area: {
-            stacking: 'normal',
-            lineColor: '#666666',
-            lineWidth: 1,
-            marker: {
-              enabled: false
-            }
-          }
-        }
-
-        f.options[:yAxis] = [{
-            title: {
-              text: 'Anzahl'
-            },
-            min: 0
-          }]
-
-        f.series(:type=> 'area',:name=> 'Stream Fetcher',
-          :data => wsf, :yAxis => 0,
-          :lineWidth => 1, :color => "#ff7f00")
-        f.series(:type=> 'area',:name=> 'Existence Checker',
-          :data => wec, :yAxis => 0,
-          :lineWidth => 1, :color => "#0f0fff")
-        f.series(:type=> 'area',:name=> 'Fetch Details',
-          :data => wfd, :yAxis => 0,
-          :lineWidth => 1, :color => "#7fff00")
-        f.series(:type=> 'area',:name=> 'Store DB',
-          :data => wsd, :yAxis => 0,
-          :lineWidth => 1, :color => "#56ffff")
-        f.series(:type=> 'area',:name=> 'Ranker',
-          :data => wr, :yAxis => 0,
-          :lineWidth => 1, :color => "#7f00ff")
-      end
-
-      ##artikel durchsatz durch komplette pipeline
-      result = Statistics::Dayly.group_by_minute_and_hour "pipeline", Statistics::Dayly.where("value.type" => "pipeline")
-
-      wsf = []
-      wec = []
-      wfd = []
-      wsd = []
-      wr = []
-
-      result[:hourly].each do |result|
-        wsf << result["stream_fetcher_count"]
-        wec << result["existence_checker_count"]
-        wfd << result["fetch_details_count"]
-        wsd << result["store_db_count"]
-        wr << result["rank_count"]
-      end
-
-      @pipeline = LazyHighCharts::HighChart.new('graph') do |f|
-        f.title({ :text=>"Artikeldurchsatz durch die Pipeline im Tagesverlauf"})
-        f.options[:chart][:zoomType] = "x"
-        f.options[:xAxis][:type] = "datetime"
-        f.options[:xAxis][:dateTimeLabelFormats] = {
-          :day => '%H:%M',
-        }
-        f.options[:plotOptions] = {
-          :series => {
-            :marker => {
-              radius: 1
-            }
-          },
-          area: {
-            stacking: 'normal',
-            lineColor: '#666666',
-            lineWidth: 1,
-            marker: {
-              enabled: false
-            }
-          }
-        }
-        f.options[:yAxis] = [{
-          title: {
-            text: 'Anzahl'
-          },
-          min: 0
-        }]
-
-        f.series(:type=> 'area',:name=> 'Stream Fetcher',
-          :data => wsf, :pointStart => Date.today,
-          :pointInterval => 1.day/1440, :yAxis => 0,
-          :lineWidth => 1, :color => "#ff7f00")
-        f.series(:type=> 'area',:name=> 'Existence Checker',
-          :data => wec, :pointStart => Date.today,
-          :pointInterval => 1.day/1440, :yAxis => 0,
-          :lineWidth => 1, :color => "#0f0fff")
-        f.series(:type=> 'area',:name=> 'Fetch Details',
-          :data => wfd, :pointStart => Date.today,
-          :pointInterval => 1.day/1440, :yAxis => 0,
-          :lineWidth => 1, :color => "#7fff00")
-        f.series(:type=> 'area',:name=> 'Store DB',
-          :data => wsd, :pointStart => Date.today,
-          :pointInterval => 1.day/1440, :yAxis => 0,
-          :lineWidth => 1, :color => "#56ffff")
-        f.series(:type=> 'area',:name=> 'Ranker',
-          :data => wr, :pointStart => Date.today,
-          :pointInterval => 1.day/1440, :yAxis => 0,
-          :lineWidth => 1, :color => "#7f00ff")
-
-      end
-
-      ### artikel durchsatz durch rank worker über den tag hinweg
-
-      data = Statistics::Dayly.all.to_a
-      rss_count = RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank").where("data.service" => "rss").count
-      facebook_count = RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank").where("data.service" => "facebook").count
-      twitter_count = RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank").where("data.service" => "twitter").count
-      url_count = RsBenchmark::Logger::RsBenchmarkLogger.where(:event => "worker_rank").where("data.service" => "url").count
-
-      result = Statistics::Dayly.group_by_minute_and_hour "rank_worker_stats", Statistics::Dayly.where("value.type" => "worker_rank")
-      data_counts = result[:minutely].map do |result|
-        result["article_count"]
-      end
-      data_counts_hourly = result[:hourly].map do |result|
-        result["article_count"]
-      end
-
-      data_words = result[:minutely].map do |result|
-        result["body_length"]
-      end
-      data_words_hourly = result[:hourly].map do |result|
-        result["body_length"]
-      end
-
-      @chart_article_volume = LazyHighCharts::HighChart.new('graph') do |f|
-        f.title({ :text=>"Artikeldurchsatz durch den Rank Worker im Tagesverlauf"})
-        f.options[:chart][:zoomType] = "x"
-        f.options[:xAxis][:type] = "datetime"
-        f.options[:xAxis][:dateTimeLabelFormats] = {
-          :day => '%H:%M',
-        }
-        f.options[:plotOptions] = {
-          :series => {
-            :marker => {
-              radius: 1
-            }
-          }
-        }
-        f.options[:yAxis] = [{
-            title: {
-              text: 'Nachrichtenanzahl pro Minute'
-            },
-            min: 0
-          },
-          {
-            title: {
-              text: 'Wortanzahl pro Minute'
-            },
-            min: 0
-          },
-          {
-            title: {
-              text: 'Nachrichtenanzahl pro Stunde'
-            },
-            min: 0
-          },
-          {
-            title: {
-              text: 'Wortanzahl pro Stunde'
-            },
-            min: 0
-          }]
-
-          f.series(:type=> 'line',:name=> 'Nachrichten pro Minute',
-            :data => data_counts, :pointStart => Date.today,
-            :pointInterval => 1.day/1440, :yAxis => 0,
-            :lineWidth => 1, :color => "#005fad")
-          f.series(:type=> 'spline',:name=> 'Nachrichten pro Stunde',
-            :data => data_counts_hourly, :pointStart => Date.today,
-            :pointInterval => 1.day/24, :yAxis => 2,
-            :lineWidth => 2, :color => "#006eff")
-          f.series(:type=> 'line',:name=> 'Wörter pro Minute', :data => data_words,
-           :pointStart => Date.today, :pointInterval => 1.day/1440, :yAxis => 1,
-           :lineWidth => 1, :color => "#d34c5b")
-          f.series(:type=> 'spline',:name=> 'Wörter pro Stunde', :data => data_words_hourly,
-            :pointStart => Date.today, :pointInterval => 1.day/24,
-            :yAxis => 3, :lineWidth => 2, :color => "#e21444")
-
-          f.series(:type=> 'pie',:name=> 'Service distribution',
-            :data=> [
-              {:name=> 'Facebook', :y=> facebook_count, :color=> 'green'},
-              {:name=> 'Twitter', :y=> twitter_count, :color=> 'blue'},
-              {:name=> 'Url', :y=> url_count ,:color=> 'yellow'},
-              {:name=> 'Rss', :y=> rss_count, :color=> 'red'}
-            ],
-            :center=> [100, 80], :size=> 100, :showInLegend=> false)
-
-          f.options[:plotOptions][:pie] = {
-            :dataLabels => {
-              :enabled => true
-            }
-          }
-      end
-
-      ####### Stream Updates über den tag hinweg
-
-      result = Statistics::Dayly.group_by_minute_and_hour "stream_reschedule", Statistics::Dayly.where("value.type" => "reschedule_stream_updates")
-      global_streams_minutely = result[:minutely].map do |result|
-        result["global_streams_count"]
-      end
-      global_streams_hourly = result[:hourly].map do |result|
-        result["global_streams_count"]
-      end
-
-      private_streams_minutely = result[:minutely].map do |result|
-        result["private_streams_count"]
-      end
-      private_streams_hourly = result[:hourly].map do |result|
-        result["private_streams_count"]
-      end
-
-      @chart_reschedules = LazyHighCharts::HighChart.new('graph') do |f|
-        f.title({ :text=>"Stream updates, die durch Interval Checker bzw. Logins verursacht werden"})
-        f.options[:chart][:zoomType] = "x"
-        f.options[:xAxis][:type] = "datetime"
-        f.options[:xAxis][:dateTimeLabelFormats] = {
-          :day => '%H:%M',
-        }
-        f.options[:plotOptions] = {
-          :series => {
-            :marker => {
-              radius: 1
-            }
-          }
-        }
-        f.options[:yAxis] = [{
-            title: {
-              text: 'Streams pro Minute'
-            },
-            min: 0
-          },
-          {
-            title: {
-              text: 'Streams pro Stunde'
-            },
-            min: 0
-          }]
-
-        f.series(:type=> 'line',:name=> 'Globale Streams pro Minute',
-          :data => global_streams_minutely, :pointStart => Date.today,
-          :pointInterval => 1.day/1440, :yAxis => 0,
-          :lineWidth => 1, :color => "#005fad")
-        f.series(:type=> 'spline',:name=> 'Globale Streams pro Stunde',
-          :data => global_streams_hourly, :pointStart => Date.today,
-          :pointInterval => 1.day/24, :yAxis => 1,
-          :lineWidth => 2, :color => "#006eff")
-
-
-        f.series(:type=> 'line',:name=> 'Private Streams pro Minute', :data => private_streams_minutely,
-         :pointStart => Date.today, :pointInterval => 1.day/1440, :yAxis => 0,
-         :lineWidth => 1, :color => "#d34c5b")
-        f.series(:type=> 'spline',:name=> 'Private Streams pro Stunde', :data => private_streams_hourly,
-          :pointStart => Date.today, :pointInterval => 1.day/24,
-          :yAxis => 1, :lineWidth => 2, :color => "#e21444")
-      end
-
-      ####### Stream Updates users VS rank worker activity
-
-      result = Statistics::Dayly.where("value.type" => "user_vs_rank_worker").asc("_id")
-      uid_counts = []
-      interval_stream_schedules_counts = []
-      article_counts = []
-      stream_counts = []
-      abort_rates = []
-      shortcut_rates = []
-      timestamps = []
-      result.each do |result|
-        uid_counts << result["value"]["uids"].uniq.count
-        interval_stream_schedules_counts << result["value"]["interval_streams"]
-        article_counts << result["value"]["article_count"]
-        stream_counts << result["value"]["streams"]
-        abort_rates << result["value"]["abort_rate"]
-        shortcut_rates << result["value"]["shortcut_rate"]
-        timestamps << result["_id"]
-      end
-
-      @chart_reschedules_vs_rank = LazyHighCharts::HighChart.new('graph') do |f|
-        f.title({ :text=>"Zusammenhang zwischen Stream updates durch Logins oder den Interval Checker und dem Throughput durch die Pipeline"})
-        f.options[:chart][:zoomType] = "x"
-        f.options[:chart][:height] = "500"
-        f.options[:xAxis][:type] = "datetime"
-        f.options[:xAxis][:categories] = timestamps
-        f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right' }
-        f.options[:xAxis][:tickInterval] = 10
-        f.options[:plotOptions] = {
-          :series => {
-            :marker => {
-              radius: 2
-            }
-          },
-          area: {
-            stacking: 'normal',
-            lineColor: '#666666',
-            lineWidth: 1,
-            marker: {
-              enabled: false
-            }
-          }
-        }
-
-        f.options[:yAxis] = [{
-            title: {
-              text: 'Anzahl'
-            },
-            min: 0
-          },
-          {
-            title: {
-              text: 'Anzahl Artikel'
-            },
-            min: 0
-          }]
-
-        f.series(:type=> 'line',:name=> 'Anzahl zu aktualisierender Streams durch Logins/Aktivität',
-          :data => stream_counts, :yAxis => 0, :type => "area", :stack => "schedules",
-          :lineWidth => 1, :color => "#0000ff")
-        f.series(:type=> 'line',:name=> 'Anzahl zu aktualisierender Streams durch Interval Checker',
-          :data => interval_stream_schedules_counts, :yAxis => 0, :type => "area", :stack => "schedules",
-          :lineWidth => 1, :color => "#000099")
-
-        f.series(:type=> 'spline',:name=> 'Artikeldurchsatz in Rank Worker',
-          :data => article_counts, :yAxis => 1, :type => "area", :stack => "throughput",
-          :lineWidth => 1, :color => "#ff0000")
-        f.series(:type=> 'spline',:name=> 'Abbruchrate (Verarbeitung von Artikel nicht notwendig)',
-          :data => abort_rates, :yAxis => 1, :type => "area", :stack => "throughput",
-          :lineWidth => 1, :color => "#cc0000")
-        f.series(:type=> 'spline',:name=> 'Abkürzungsrate (nur Update von Artikel notwendig)',
-          :data => shortcut_rates, :yAxis => 1, :type => "area", :stack => "throughput",
-          :lineWidth => 1, :color => "#990000")
-
-        f.series(:type=> 'line',:name=> 'Anzahl eindeutiger NutzerInnen die Updates verursachen',
-          :data => uid_counts, :yAxis => 0,
-          :lineWidth => 1, :color => "#00ff00")
-      end
-
-
-      # # ####### histogramm user anzahl an private streams
-      # result = Statistics::Dayly.histogramm(Statistics::Dayly.where("value.type" => "user_stats"), "private_streams_count", 3)
-
-      # @user_stats_private_stream_counts = LazyHighCharts::HighChart.new('graph') do |f|
-      #   f.title({ :text=>"Histogramm über die Anzahl an privaten Streams pro User"})
-      #   f.options[:xAxis][:type] = "linear"
-      #   f.options[:chart][:zoomType] = "x"
-      #   f.options[:xAxis][:categories] = result[:labels]
-      #   f.options[:xAxis][:labels] = { :rotation => -90, :align => 'right' }
-      #   f.options[:yAxis] = [{
-      #       title: {
-      #         text: 'Häufigkeit'
-      #       },
-      #       min: 0
-      #     }]
-
-      #   f.series(:type=> 'column',:name=> 'Häufigkeiten privater Streams',
-      #     :data => result[:data], :color => "#005fad", dataLabels: {
-      #       enabled: true
-      #     })
-      # end
-
-      ####### histogramm artikel pro user
-      result = Statistics::Dayly.where("value.type" => "stream_lengths_user_count")
-      data = result.map do |result|
-        [result["value"]["avg_stream_length"], result["value"]["users_subscribed_count"]]
-      end
-
-      @histogramm_feed_length_user_count = LazyHighCharts::HighChart.new('graph') do |f|
-        f.title({ :text=>"Histogramm Feedlänge-Abonnierte User. Die Feedlänge ist ein durchschnittswert"})
-        f.options[:chart] = {
-          type: 'scatter',
-          zoomType: 'xy'
-        }
-        f.options[:xAxis][:type] = "linear"
-        f.options[:xAxis] = [{
-            title: {
-              text: 'Feedlänge'
-            },
-            min: 0,
-            startOnTick: true,
-            endOnTick: true,
-            showLastLabel: true
-          }]
-        f.options[:yAxis] = [{
-            title: {
-              text: 'Abonnentenanzahl'
-            },
-            min: 0
-          }]
-        f.options[:plotOptions] = {
-          scatter: {
-            tooltip: {
-              headerFormat: '<b>Daten:</b><br>',
-              pointFormat: 'Feedlänge: {point.x}, Abonnentenanzahl: {point.y}'
-            }
-          }
-        }
-
-        f.series(:name=> 'foo',
-          :data => data, :color => "rgba(223, 83, 83, .5)")
-      end
-
-      # histogramm abonnentenanzahl
-
-      gs_stats = {}
-      sum = 0
-      GlobalStream::Rss.all.each do |s|
-        gs_stats[s.user_ids.count] = 0 unless gs_stats[s.user_ids.count]
-        gs_stats[s.user_ids.count] += 1
-        sum += s.user_ids.count
-      end
-
-      gs_stats = gs_stats.sort_by { |key,value| -value }
-
-      @histogramm_abo_count = LazyHighCharts::HighChart.new('graph') do |f|
-        f.title({ :text=>"AbonnentInnen Anzahlen pro Stream"})
-        f.options[:chart][:zoomType] = "x"
-        f.options[:xAxis][:plotLines] = [{
-          value: sum/GlobalStream::Rss.count.to_f,
-          color: '#ff0000',
-          width:2,
-          zIndex:4,
-          label:{text:"Durchschnitt #{(sum/GlobalStream::Rss.count.to_f).round(2)}"}
-        }]
-        f.options[:xAxis][:categories] = gs_stats.map do |array| array[0] end
-        f.options[:xAxis][:type] = "linear"
-        f.options[:xAxis][:title] = { text: "AbonnentInnen Anzahl" }
-        f.options[:yAxis] = [{
-            title: {
-              text: 'Häufigkeit'
-            },
-            min: 0
-          }]
-
-        f.series(:type=> 'column',:name=> 'Häufigkeit',
-          :data => gs_stats.map do |array| array[1] end, :color => "#005fad", dataLabels: {
-            enabled: true
-          })
       end
     end
   end

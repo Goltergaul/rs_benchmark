@@ -39,7 +39,19 @@ if defined?(Workers::ExistenceChecker)
   Workers::ExistenceChecker.class_eval do
     def after_consume_hook payload
       log_success
-      @redis.hset "response_time_tracking_#{payload.stream}_articles", payload.id, Time.now.to_i
+    end
+
+    def self.before_enqueue_hook routing_key, payload
+      @@redis ||= RedisStore.new
+      # this is for determining io of the system
+      RsBenchmark::ResponseTime::RsBenchmarkResponseTime.create!(
+        :tag => "enqueue",
+        :data => {
+          :time => Time.now,
+          :worker => self.class.name
+        }
+      )
+      @@redis.hset "response_time_tracking_#{payload.stream}_articles", payload.id, Time.now.to_i
     end
   end
 end

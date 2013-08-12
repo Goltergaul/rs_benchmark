@@ -40,15 +40,31 @@ module BenchmarkStreamServer
     end
 
     # return a random stream
-    def pick_stream
-      unless @urn
+    def pick_rss_stream abo_count
+      unless @rss_streams_urn
         probabilities = {}
         @streams.each do |id, stream|
+          next if stream[:type] != :rss
           probabilities[stream] = 1
         end
-        @urn = RsBenchmark::UrnRandomGenerator.new(probabilities, BenchmarkStreamServer::SEED)
+        @rss_streams_urn = RsBenchmark::UrnRandomGenerator.new(probabilities, BenchmarkStreamServer::SEED)
+        @picked_streams = []
       end
-      @urn.pick
+
+      if abo_count > 1
+        @picked_streams.each do |stream|
+          if @picked_streams.count(stream) == abo_count-1
+            @picked_streams << stream
+            return stream
+          end
+        end
+      end
+
+      # if no stream could be picked with correct abo_count return one with abo_count 1
+      picked_stream = @rss_streams_urn.pick
+      @picked_streams << picked_stream
+
+      return picked_stream
     end
 
     def export
@@ -100,8 +116,8 @@ module BenchmarkStreamServer
 
       corpus = Corpus.where("corpus.length >= ? AND corpus.service = ?", length, service).limit(1).offset(rand(count)).first
       throw "no corpus of length #{length} available! corpus count #{Corpus.count}" unless corpus
-      body = corpus.text[0...length]
-      throw "corpus not long enough is: #{body.length}-#{corpus.text.length}-#{corpus.length}, should: #{length}" if body.length < length
+      corpus.text = corpus.text[0...length]
+      throw "corpus not long enough is: #{corpus.text.length}, should: #{length}" if corpus.text.length < length
 
       corpus
     end
