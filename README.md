@@ -1,10 +1,10 @@
 # RsBenchmark
 
-TODO: Write a gem description
+This Gem was written to benchmark the James News aggregator system used at jamesapp.com
 
 ## Installation
 
-Add this line to your application's Gemfile:
+Add this line to James's Gemfile:
 
     gem 'rs_benchmark'
 
@@ -12,18 +12,6 @@ And then execute:
 
     $ bundle
 
-Or install it yourself as:
-
-    $ gem install rs_benchmark
-
 ## Usage
 
-TODO: Write usage instructions here
-
-## Contributing
-
-1. Fork it
-2. Create your feature branch (`git checkout -b my-new-feature`)
-3. Commit your changes (`git commit -am 'Added some feature'`)
-4. Push to the branch (`git push origin my-new-feature`)
-5. Create new Pull Request
+Follow the instructions on the CD
