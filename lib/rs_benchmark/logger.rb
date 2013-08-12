@@ -1,6 +1,7 @@
 module RsBenchmark
   class Logger
 
+    # Model for log entries
     class RsBenchmarkLogger
       include Mongoid::Document
 
@@ -37,6 +38,7 @@ module RsBenchmark
       get_instance.set_options options
     end
 
+    # log something tagged by event
     def self.log event, &block
       get_instance.log event, &block
     end
@@ -50,6 +52,7 @@ module RsBenchmark
       @options = options
     end
 
+    # run the passed block to retrieve the data that should be logged, decorate it with the current time and save it
     def log event, &block
       throw "Logger not configured" unless @options
 

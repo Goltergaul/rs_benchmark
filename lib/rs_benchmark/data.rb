@@ -3,6 +3,7 @@ require "gsl"
 module RsBenchmark
   class Data
 
+    # Helper for grouping Logentries of a specifig log event by user_id
     def self.get_intervals_grouped_by_user_id(event)
       grouped_by_user = {}
       Logger::RsBenchmarkLogger.where(:event => event).each do |value|
@@ -24,6 +25,7 @@ module RsBenchmark
       grouped_by_user
     end
 
+    # Helper to calculate mean, median, standard deviation, variance and cov from values grouped by id
     def self.get_mean_and_stdev_by_user(event)
       data = get_intervals_grouped_by_user_id(event)
       data.each do |user_id, result|

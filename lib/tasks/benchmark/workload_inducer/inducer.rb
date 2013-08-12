@@ -2,6 +2,8 @@ require_relative "task"
 require "gsl"
 
 module WorkloadInducer
+
+  # This class controls how task chains are played
   class Inducer
     include Singleton
 
@@ -17,10 +19,12 @@ module WorkloadInducer
       @chains = []
     end
 
+    # add a new task chain
     def add_chain task_chain
       @chains << task_chain
     end
 
+    # shutdown gracefully
     def on_shutdown
       Proc.new do
         puts "Caught TERM signal, stopping EM"
@@ -29,7 +33,7 @@ module WorkloadInducer
       end
     end
 
-    # start inducing workload, run all chains simultaneous
+    # start inducing workload
     def induce!(stream_server_thread)
 
       @chain_count = @chains.count
@@ -48,12 +52,14 @@ module WorkloadInducer
         @chains_started_count = 0
 
         unless ENV["ramp_up_delay"]
+          # start all cains
           @chains.each do |task|
             delay_time = task.wait_time + (@rand.uniform*(task.wait_time-1)).to_i
             puts "Delaying chain start by #{(delay_time/60.0).round(2)} minutes"
             start_chain task, delay_time
           end
         else
+          # start one chain after another
           puts "Using ramp up mode with #{ENV["ramp_up_delay"]} seconds delay"
           ramp_up_stepsize = ENV["ramp_up_step"].nil? ? 1 : ENV["ramp_up_step"].to_i
           @chains.each_slice(ramp_up_stepsize).with_index do |tasks, index|
@@ -84,6 +90,7 @@ module WorkloadInducer
       end
     end
 
+    # starts a chain
     def start_chain task, delay_time=0
       chain_finished_callback = proc {
         puts "*************************************"
@@ -92,9 +99,8 @@ module WorkloadInducer
         remove_chain(task)
       }
 
-      # starting chains with different delays so that not everything is at the same time
+      # starting chains with different delays so that not everything is startet at the same time
       EM.add_timer delay_time, proc {
-        # puts "Starting Chain!"
         @chains_started_count += 1
         task.perform(chain_finished_callback)
 
@@ -106,6 +112,7 @@ module WorkloadInducer
       }
     end
 
+    # prints a status line every second while the test is running
     def print_status
       next_run = ((@@next_task-Time.now)/60.0).round(2)
 
@@ -117,6 +124,7 @@ module WorkloadInducer
       }
     end
 
+    # remove chain where all tasks have been run and stop inducer if it was the last chain
     def remove_chain task_chain
       @chains.delete(task_chain)
 

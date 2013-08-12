@@ -1,3 +1,6 @@
+# This monkey patch is used to fetch facebook streams from the stream simulation server instead from facebook.com.
+# Please note that the ip address of the simulation server is hardcoded into this file.
+
 require "open-uri"
 
 module FbGraph

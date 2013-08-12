@@ -1,4 +1,6 @@
 namespace :rs_benchmark do
+
+  # starts the stream simulation server for demo purposes with 3 different streams
   task :demo_stream_server => :environment do
     require_relative "benchmark/stream_server/stream_server"
 

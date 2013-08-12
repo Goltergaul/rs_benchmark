@@ -16,10 +16,12 @@ module BenchmarkStreamServer
 
   BenchmarkStreamServer::SEED = ENV["seed"] ? ENV["seed"].to_i : rand(1000000).to_i
 
+  # Model for accessing the corpus database
   class Corpus < ActiveRecord::Base
     attr_accessible :length, :text, :service, :title
   end
 
+  # This singleton caches the simulated streams and their articles
   class Cache
     include Singleton
 
@@ -28,6 +30,7 @@ module BenchmarkStreamServer
       @streams = {}
     end
 
+    # Add a stream configuration to the cache (This is done by the workload generation rake Task)
     def add_stream stream
       stream[:articles] = [] unless stream[:articles]
       @streams[stream[:id]] = stream
@@ -35,11 +38,13 @@ module BenchmarkStreamServer
       self
     end
 
+    # Retrieve a stream from the cache by its id
     def get_stream id
       @streams[id]
     end
 
-    # return a random stream
+    # return a random stream (used to assign streams to users)
+    # @param [Integer] abo_count The number of users that should followed the picked stream
     def pick_rss_stream abo_count
       unless @rss_streams_urn
         probabilities = {}
@@ -51,6 +56,7 @@ module BenchmarkStreamServer
         @picked_streams = []
       end
 
+      # this only works for small numbers of streams that are followed by more then one user. This is the case in the james workload
       if abo_count > 1
         @picked_streams.each do |stream|
           if @picked_streams.count(stream) == abo_count-1
@@ -67,16 +73,19 @@ module BenchmarkStreamServer
       return picked_stream
     end
 
+    # export stream configurations as yaml file (used for workload setups)
     def export
       @streams.to_yaml
     end
 
+    # restore configuration from yaml file (used for workload setups)
     def import file_path
       @streams = YAML.load(File.read(file_path)).with_indifferent_access
       puts "Loaded #{@streams.keys.count} stream configurations!"
     end
   end
 
+  # This is the stream simulation server. It is a sinatra app
   class StreamServer < Sinatra::Base
     set :server, 'webrick'
     set :bind, ENV["bind_address"]
@@ -102,6 +111,7 @@ module BenchmarkStreamServer
       set :cache, {}
     end
 
+    # retrieve a corpus with specific length and type (rss, facebook or twitter) from the database
     def get_corpus length, service
       service = service.to_s
       length = length.to_i
@@ -122,6 +132,10 @@ module BenchmarkStreamServer
       corpus
     end
 
+    # Generates a random rss article
+    # @param [Integer] length Length of the article
+    # @param [Time] time Publication Time of the article
+    # @param [String] stream_id ID of the stream the article is in
     def generate_rss_article length, time, stream_id
       corpus = get_corpus(length, :rss)
       title = corpus.title
@@ -136,6 +150,10 @@ module BenchmarkStreamServer
       }
     end
 
+    # Generates a random tweet
+    # @param [Integer] length Length of the post
+    # @param [Time] time Publication Time of the post
+    # @param [String] stream_id ID of the stream the post is in
     def generate_twitter_article length, time, stream_id
       {
         :id => settings.global_article_counter.to_s,
@@ -152,6 +170,10 @@ module BenchmarkStreamServer
       }
     end
 
+    # Generates a random facebook post
+    # @param [Integer] length Length of the tweet
+    # @param [Time] time Publication Time of the tweet
+    # @param [String] stream_id ID of the stream the tweet is in
     def generate_facebook_article length, time, stream_id
       case settings.facebook_type_generator.pick
         when "status"
@@ -288,19 +310,23 @@ module BenchmarkStreamServer
       end
     end
 
+    # generates an article
     def generate_article length, time, stream_id, type
       settings.global_article_counter += 1
       self.send("generate_#{type}_article", length, time, stream_id)
     end
 
+    # Returns a Body length for the stream
     def pick_body_length stream
       settings.send("#{stream[:type]}_body_length_generator").pick
     end
 
+    # Returns a publish interval for the stream (= time when the next article has to be published)
     def pick_publish_interval stream
       settings.send("#{stream[:type]}_publish_interval_generator").pick
     end
 
+    # Populate a stream with articles according to the current time, stream length, publish intervals etc.
     def generate_articles stream_id
       result = []
       pub_date = 0
@@ -323,12 +349,12 @@ module BenchmarkStreamServer
         # save most recent pub date as next_pubdate
         stream[:next_pub_date] = stream[:articles].first[:pub_date] + pick_publish_interval(stream) * SCALE_FACTOR
       else
-        #on consecutive loads check if enough time passed and generate new articles
+        # on consecutive loads check how much time has passed and generate new articles if needed
         next_publish_time = stream[:next_pub_date]
         while(next_publish_time < Time.now) do
           body_length = pick_body_length(stream)
           stream[:articles].unshift(generate_article(body_length, next_publish_time, stream_id, stream[:type]))
-          stream[:articles].pop #remove last article to maintain constant length
+          stream[:articles].pop #remove last article to maintain constant stream length
 
           next_publish_time += pick_publish_interval(stream) * SCALE_FACTOR
           stream[:next_pub_date] = next_publish_time
@@ -336,6 +362,7 @@ module BenchmarkStreamServer
       end
     end
 
+    # Route for RSS articles (returns HTML)
     get '/rss_article_html/:id' do
       id = params[:id].to_i
       corpus = Corpus.find(id)
@@ -343,6 +370,7 @@ module BenchmarkStreamServer
       erb :article, :locals => { :corpus => corpus }
     end
 
+    # Route for RSS Streams (returns XML Atom Feed)
     get '/rss/:id' do
       id = params[:id].to_i
       stream = Cache.instance.get_stream id
@@ -350,6 +378,7 @@ module BenchmarkStreamServer
       builder :stream, :locals => { :articles => stream[:articles], :id => "#{id}. Next publication is: #{stream[:next_pub_date]}" }
     end
 
+    # Route for Facebook Streams (returns JSON)
     get '/facebook/:id' do
       content_type :json
 
@@ -359,6 +388,7 @@ module BenchmarkStreamServer
       stream[:articles].to_json
     end
 
+    # Route for Twitter Streams (returns JSON)
     get '/twitter/:id/:since_id' do
       content_type :json
 

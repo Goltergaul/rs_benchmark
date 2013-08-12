@@ -1,5 +1,6 @@
 namespace :rs_benchmark do
 
+  # This task generates a workload setup file that can be used to generate a workload
   task :generate_workload_file => :environment do
     throw "You must specify environment variable 'dump_folder'" unless ENV["dump_folder"]
 
@@ -17,6 +18,7 @@ namespace :rs_benchmark do
     File.open("#{ENV["dump_folder"]}/#{dump_name}/cache_dump.yml", 'w') {|f| f.write(BenchmarkStreamServer::Cache.instance.export) }
   end
 
+  # Generates workload and starts a stream simulation server
   task :generate_workload => :environment do
     begin
       Rake::Task["rs_benchmark:workload_generators:initialize_environment"].invoke
@@ -33,18 +35,20 @@ namespace :rs_benchmark do
         curl.headers["Content-type"] = "application/json"
       end
 
-      # for testing first solr versions (needs to clear standard core)
+      # for testing first solr versions (needs to clear default core)
       Curl::Easy.http_post("http://#{solr_config["host"]}:#{solr_config["port"]}/solr/update?commit=true", {"delete" => { "query" => "*:*" }}.to_json) do |curl|
         curl.headers["Content-type"] = "application/json"
       end
 
       if ENV["setup_from_folder"]
+        # use a workload setup
         puts "Importing setup from #{ENV["setup_from_folder"]}/#{Entry.collection.database.name}/..."
         puts `mongorestore -d #{Entry.collection.database.name} -h #{Mongoid.default_session.cluster.seeds.first} #{ENV["setup_from_folder"]}/#{Entry.collection.database.name}/`
 
         puts "Importing Stream Server cache from file #{ENV["setup_from_folder"]}/cache_dump.yml"
         BenchmarkStreamServer::Cache.instance.import "#{ENV["setup_from_folder"]}/cache_dump.yml"
       else
+        # no workload setup is used, generate one on the fly
         Rake::Task["rs_benchmark:workload_generators:create_setup"].invoke
       end
 
@@ -55,6 +59,7 @@ namespace :rs_benchmark do
       # generate stream schedules
       Rake::Task["rs_benchmark:workload_generators:prepare_login_chains"].invoke
 
+      # Start workload generation
       WorkloadInducer::Inducer.instance.induce!(sinatra_thread)
       sinatra_thread.join
     rescue Exception => e
@@ -148,6 +153,7 @@ namespace :rs_benchmark do
       end
     end
 
+    # Generates RSS Feed konfigurations for simulation
     task :setup_streams do
 
       puts "Generating #{@feed_count} potential streams..."
@@ -167,6 +173,7 @@ namespace :rs_benchmark do
       end
     end
 
+    # Generate Users according to workload description
     task :setup_users do
       require "open-uri"
       puts "Creating #{@user_count} users..."
@@ -260,11 +267,10 @@ namespace :rs_benchmark do
       end
     end
 
+    # Generates task chains for each user
     task :prepare_login_chains do
       require_relative "benchmark/workload_inducer/inducer"
       puts "Generating login chains... (Time values will be scaled by #{SCALE_FACTOR})"
-
-      # create generator to pick a user group (first version picks only an user, there are no groups)
 
       User.all.each do |user|
         user_profile_id = user.read_attribute(:user_profile_id)
@@ -273,7 +279,7 @@ namespace :rs_benchmark do
         interval_generator = RsBenchmark::PseudoRandomGenerator.new(user_profile[:reschedule_intervals], BenchmarkStreamServer::SEED)
 
         task_count = 0
-        max_task_count = 1000
+        max_task_count = 1000 # generate task chains of 1000 length each
         first_task_of_chain = task_chain = WorkloadInducer::UserScheduleTask.new({:wait_time => interval_generator.pick.minutes * SCALE_FACTOR, :user_id => user.id})
         while(task_count < max_task_count) do
           task = WorkloadInducer::UserScheduleTask.new({:wait_time => interval_generator.pick.minutes * SCALE_FACTOR, :user_id => user.id})

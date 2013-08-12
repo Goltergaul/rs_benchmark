@@ -1,3 +1,6 @@
+# This monkey patch is used to fetch twitter streams from the stream simulation server instead from twitter.com.
+# Please note that the ip address of the simulation server is hardcoded into this file.
+
 Twitter::Client.class_eval do
   class TweetMock
     class UserMock

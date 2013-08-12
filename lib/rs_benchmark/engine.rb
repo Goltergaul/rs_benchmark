@@ -3,6 +3,7 @@ require "rs_benchmark/data"
 require "rs_benchmark/response_time"
 
 module RsBenchmark
+  # An engine is used to plug this gem into the hosting rails app and provide own routes, controllers and models
   class Engine < ::Rails::Engine
     isolate_namespace RsBenchmark
 

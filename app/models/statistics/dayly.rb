@@ -7,44 +7,12 @@ module Statistics
     index({"value.type" => 1})
     index({"value.service" => 1})
 
-    def self.group_by_minute_and_hour prefix, query
-      query = query.to_a
-
-      result = {
-        :hourly => [],
-        :minutely => []
-      }
-
-      hour_sums = {}
-      (0..23).each do |hour|
-        (0..59).each do |minute|
-          if minute == 30
-            result[:hourly] << hour_sums
-            hour_sums = {}
-          end
-
-          minute_data = query.find do |result|
-            result["_id"] == "#{prefix}#{hour};#{minute}"
-          end
-
-          if minute_data
-            result[:minutely] << minute_data["value"]
-            minute_data["value"].each do |key,value|
-              if value.instance_of?(Float) || value.instance_of?(Fixnum)
-                hour_sums[key] = 0 unless hour_sums.has_key?(key)
-                hour_sums[key] += value
-              end
-            end
-          else
-            result[:minutely] << {}
-          end
-        end
-      end
-      result[:hourly] << hour_sums
-
-      return result
-    end
-
+    # builds a histogramm from a query on a collection of entries that look like { my_hash: { some_property: some_value, other_property: some_value}}
+    # @param [Mongoid query] query Query to get data
+    # @param [String] property Property in the "value" Hash, e.g. "some_property"
+    # @param [Integer] bin_count Number of bins the histogram should have
+    # @param [String] hash_name The key for the hash that holds the key defined by the param property, e.g. "my_hash"
+    # @param [Boolean] logaritmic Whether to scale the bucket sizes of the histogram in logaritmic steps
     def self.histogramm query, property, bin_count = 20, hash_name = "value", logaritmic = false
       maximum = query.max("#{hash_name}.#{property}")
       minimum = query.min("#{hash_name}.#{property}")
@@ -136,8 +104,11 @@ module Statistics
       }
     end
 
-    # exponential bin size: z = maximum / sqrt(bin_count) => (value/z)^2 => bin
 
+    # build a histogramm from values in an array
+    # @param [Array] array The array of values
+    # @param [Integer] bin_count The number of bins
+    # @param [Boolean] logaritmic Whether to scale the bucket sizes of the histogram in logaritmic steps
     def self.histogramm_from_array array, bin_count = 20, logaritmic = false
       array.delete(nil)
       array.sort!
@@ -192,6 +163,14 @@ module Statistics
       result_hash
     end
 
+    # This method is used to extract data from an histogram, calculate relative frequencies and return them as hash. This hash is then merged in the Workload Description File
+    # @param [Array,Query] data Array or Query to build a histogramm from
+    # @param [String] name Name of the property in the returned hash
+    # @param [String] property Name of the property in the hash in the hash of the returned hash, see first lines of function
+    # @param [Integer] bin_count Number of bins of the histogram
+    # @param [String] hash_name As in the histogram method
+    # @param [Boolean] logaritmic Whether to scale the bucket sizes of the histogram in logaritmic steps
+    # @param [Boolean] relative_frequencies Whether histogram frequencies should be left as absolute values or not (false = relative frequencies)
     def self.extract_workload_spec data, name, property, bin_count=20, hash_name="value", logaritmic = false, relative_frequencies=true
       yaml_hash = {
         name => {

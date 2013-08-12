@@ -1,3 +1,4 @@
+# When the consumers start up this is executed
 if ENV["RAILS_ENV"] == "benchmark"
   puts "Loading monkeypatches for benchmarking /!\\"
   require_relative "response_time_tracking"

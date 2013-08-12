@@ -1,3 +1,7 @@
+# This monkey patch is used to track artikles while they are passing through all consumers so that
+# the reponse times "stream first" and "stream last" can be calculated. Also it loggs failures so that a POFOD value
+# can be calculated later.
+
 Workers::BasicWorker.class_eval do
   def after_fail_hook payload
 

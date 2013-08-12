@@ -2,6 +2,8 @@ require "gsl"
 require "bigdecimal"
 
 module RsBenchmark
+
+  # Random generator that uses the "interval-method"
   class PseudoRandomGenerator
 
     def initialize distribution, seed=rand
@@ -12,6 +14,7 @@ module RsBenchmark
       @rnd = GSL::Rng.alloc("gsl_rng_mt19937", seed)
     end
 
+    # pick a value from the distribution
     def pick
       float = BigDecimal.new(@rnd.uniform.to_s)
       from = to = BigDecimal.new("0.0")
@@ -30,6 +33,7 @@ module RsBenchmark
 
   end
 
+  # Random generator that uses the "Urn-Method"
   class UrnRandomGenerator
 
     # needs absolute frequencies, not relative ones
@@ -50,6 +54,7 @@ module RsBenchmark
       @urn_content = []
     end
 
+    # initially fills the urn with values according to the distribution
     def fill_urn
       @distribution.each do |value, count|
         (count/@gcd).to_i.times do
@@ -58,6 +63,7 @@ module RsBenchmark
       end
     end
 
+    # pick a value. If the urn is empty fill it.
     def pick
       if @urn_content.length == 0
         fill_urn

@@ -1,3 +1,5 @@
+# This monkey patch enables profiling
+
 require "ruby-prof"
 EventMachine.threadpool_size = 1 # better for profiling
 
